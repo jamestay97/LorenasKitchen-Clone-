@@ -4,7 +4,7 @@ import { defineConfig } from "vite"
 
 export default defineConfig({
   plugins: [react()],
-  // REPLACE 'LorenasKitchen-Clone-' WITH YOUR EXACT REPO NAME
+  // MAKE SURE THIS MATCHES YOUR REPO NAME EXACTLY (Case Sensitive!)
   base: "/LorenasKitchen-Clone-/", 
   resolve: {
     alias: {
