@@ -1,35 +1,22 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-
+// CHANGE: Import HashRouter instead of BrowserRouter
+import { HashRouter as Router, Routes, Route } from 'react-router-dom'; 
 import Layout from './Layout';
 import Home from './components/public/Home';
-import Gallery from './components/public/Gallery';
 import AdminPage from './components/admin/AdminPage';
 import AdminLogin from './components/admin/AdminLogin';
 
-const queryClient = new QueryClient();
-
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Layout>
-          <Routes>
-            {/* Public Pages */}
-            <Route path="/" element={<Home />} />
-            <Route path="/gallery" element={<Gallery />} />
-            
-            {/* Admin Pages */}
-            <Route path="/login" element={<AdminLogin />} />
-            <Route path="/admin" element={<AdminPage />} />
-            
-            {/* Fallback for unknown routes */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Layout>
-      </BrowserRouter>
-    </QueryClientProvider>
+    <Router> {/* This is now HashRouter */}
+      <Layout>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/login" element={<AdminLogin />} />
+          <Route path="/admin" element={<AdminPage />} />
+        </Routes>
+      </Layout>
+    </Router>
   );
 }
 
