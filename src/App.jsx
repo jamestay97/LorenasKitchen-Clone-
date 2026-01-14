@@ -1,34 +1,23 @@
-import React from 'react'
-import { HashRouter as Router, Routes, Route } from 'react-router-dom'
-import { Toaster } from 'sonner'
-import Navbar from './components/Navbar'
-import Home from './pages/Home'
-import Gallery from './pages/Gallery'
-import AdminLogin from './pages/admin/AdminLogin'
-import AdminDashboard from './pages/admin/AdminDashboard'
-import ProtectedRoute from './components/ProtectedRoute'
+import React from 'react';
+// IMPORT HashRouter (renamed to Router for convenience)
+import { HashRouter as Router, Routes, Route } from 'react-router-dom'; 
+import Layout from './Layout';
+import Home from './components/public/Home';
+import AdminPage from './components/admin/AdminPage';
+import AdminLogin from './components/admin/AdminLogin';
 
 function App() {
   return (
-    <Router>
-      <Toaster position="top-center" />
-      <div className="min-h-screen">
+    <Router> 
+      <Layout>
         <Routes>
-          <Route path="/" element={<><Navbar /><Home /></>} />
-          <Route path="/gallery" element={<><Navbar /><Gallery /></>} />
+          <Route path="/" element={<Home />} />
           <Route path="/login" element={<AdminLogin />} />
-          <Route
-            path="/admin"
-            element={
-              <ProtectedRoute>
-                <AdminDashboard />
-              </ProtectedRoute>
-            }
-          />
+          <Route path="/admin" element={<AdminPage />} />
         </Routes>
-      </div>
+      </Layout>
     </Router>
-  )
+  );
 }
 
-export default App
+export default App;
