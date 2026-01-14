@@ -21,25 +21,26 @@ export default function AdminLogin() {
     checkSession();
   }, [navigate]);
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-
-    // Send Magic Link
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email,
-      options: {
-        emailRedirectTo: window.location.origin + '/admin', // Redirects here after clicking email
-      },
-    });
-
-    if (error) {
-      toast.error('Error: ' + error.message);
-    } else {
-      toast.success('Check your email for the magic login link!');
+const handleLogin = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          // FIX: Hardcode the full URL (Repo Name included)
+          emailRedirectTo: 'https://jamestay97.github.io/LorenasKitchen-Clone-/',
+        },
+      })
+      if (error) throw error
+      toast.success('Check your email for the magic link!')
+    } catch (error) {
+      toast.error(error.message)
+    } finally {
+      setLoading(false)
     }
-    setLoading(false);
-  };
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#f4f5f0] px-4">
