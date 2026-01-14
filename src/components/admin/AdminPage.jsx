@@ -13,36 +13,38 @@ import { useNavigate } from 'react-router-dom';
 // --- CONFIGURATION ---
 const API_KEY = 'sk_JhFUbZHtRYTp8gElg6l0IqdUlMAOdwRN'; 
 
-// Helper to generate the URL with the key embedded (Bypasses CORS)
+// Helper: Generates URL with Key embedded (Bypasses CORS & Rate Limits)
 const getAIImageUrl = (prompt, seed) => {
-    const safePrompt = encodeURIComponent(prompt.slice(0, 150));
-    // We append the key as 'ref' which Pollinations accepts without blocking headers
-    return `https://image.pollinations.ai/prompt/${safePrompt}?width=800&height=600&nologo=true&seed=${seed}&model=flux&ref=${API_KEY}`;
+    // 1. Clean the prompt to keep URL short
+    const safePrompt = encodeURIComponent(prompt.slice(0, 100));
+    
+    // 2. Add 'private=true' & 'apiKey' to use your paid credits
+    // 3. Add 'cb' (Cache Buster) to force browser to ignore old "Limit Reached" images
+    const cacheBuster = Math.random();
+    
+    return `https://image.pollinations.ai/prompt/${safePrompt}?width=800&height=600&nologo=true&seed=${seed}&model=flux&private=true&apiKey=${API_KEY}&cb=${cacheBuster}`;
 }
 
 const getAIText = async (dishName) => {
     try {
-        const prompt = `Write a mouth-watering, gourmet 1-sentence description for a menu item called "${dishName}". Make it sound fancy.`;
-        // Fallback description immediately if API fails
-        const fallback = `A delicious serving of ${dishName} prepared with fresh ingredients.`;
-
+        const prompt = `Describe ${dishName} in 10 words. Gourmet style.`;
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 4000); // 4s timeout
 
-        const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`, {
+        const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}?private=true&apiKey=${API_KEY}`, {
              signal: controller.signal
         });
         clearTimeout(timeoutId);
         
-        if (!res.ok) return fallback;
+        if (!res.ok) return `Freshly prepared ${dishName}.`;
         const text = await res.text();
-        return text.replace(/"/g, '') || fallback; 
+        return text.replace(/"/g, '') || `Freshly prepared ${dishName}.`; 
     } catch (e) {
-        return `A delicious serving of ${dishName} prepared with fresh ingredients.`;
+        return `Freshly prepared ${dishName}.`;
     }
 }
 
-export default function AdminDashboard() {
+export default function AdminPage() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('builder');
   const [initialLoading, setInitialLoading] = useState(true);
