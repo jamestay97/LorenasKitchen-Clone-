@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
 import { toast } from 'sonner';
 import { format, startOfWeek, addDays } from 'date-fns';
@@ -6,21 +6,47 @@ import {
   Sparkles, Plus, Search, Save, Trash2, Calendar,
   ChefHat, LogOut, Loader2, Check, X,
   Users, MessageSquare, Archive, UserPlus, Edit2,
-  RefreshCw, Wand2, Image as ImageIcon
+  RefreshCw, Wand2
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 // --- CONFIGURATION ---
-// Note: In a real production app, use Environment Variables (import.meta.env...) 
-// for security, but this will work for your current setup.
 const API_KEY = 'sk_JhFUbZHtRYTp8gElg6l0IqdUlMAOdwRN'; 
+
+// Helper to generate the URL with the key embedded (Bypasses CORS)
+const getAIImageUrl = (prompt, seed) => {
+    const safePrompt = encodeURIComponent(prompt.slice(0, 150));
+    // We append the key as 'ref' which Pollinations accepts without blocking headers
+    return `https://image.pollinations.ai/prompt/${safePrompt}?width=800&height=600&nologo=true&seed=${seed}&model=flux&ref=${API_KEY}`;
+}
+
+const getAIText = async (dishName) => {
+    try {
+        const prompt = `Write a mouth-watering, gourmet 1-sentence description for a menu item called "${dishName}". Make it sound fancy.`;
+        // Fallback description immediately if API fails
+        const fallback = `A delicious serving of ${dishName} prepared with fresh ingredients.`;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+
+        const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`, {
+             signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        
+        if (!res.ok) return fallback;
+        const text = await res.text();
+        return text.replace(/"/g, '') || fallback; 
+    } catch (e) {
+        return `A delicious serving of ${dishName} prepared with fresh ingredients.`;
+    }
+}
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('builder');
   const [initialLoading, setInitialLoading] = useState(true);
   
-  // Data States
   const [dishes, setDishes] = useState([]);
   const [menus, setMenus] = useState([]);
   const [clients, setClients] = useState([]);
@@ -68,7 +94,7 @@ export default function AdminDashboard() {
 
   return (
     <div className="min-h-screen bg-[#fcfdfa] text-slate-800 font-sans">
-      {/* --- HEADER --- */}
+      {/* HEADER */}
       <div className="bg-white border-b border-stone-200 sticky top-0 z-50 shadow-sm">
         <div className="max-w-7xl mx-auto px-6 py-5 flex justify-between items-center">
           <div className="flex items-center gap-5">
@@ -87,7 +113,7 @@ export default function AdminDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8">
-        {/* --- TABS --- */}
+        {/* TABS */}
         <div className="flex gap-2 mb-10 bg-white p-2 rounded-2xl shadow-sm border border-stone-100 overflow-x-auto">
           <TabButton active={activeTab === 'builder'} onClick={() => setActiveTab('builder')} icon={<Sparkles className="w-4 h-4" />}>Menu Builder</TabButton>
           <TabButton active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<Search className="w-4 h-4" />}>Food Library</TabButton>
@@ -107,8 +133,6 @@ export default function AdminDashboard() {
     </div>
   );
 }
-
-// --- REUSABLE COMPONENTS ---
 
 function TabButton({ active, onClick, icon, children, badge }) {
   return (
@@ -130,90 +154,6 @@ function TabButton({ active, onClick, icon, children, badge }) {
     </button>
   );
 }
-
-// *** THE SMART SECURE IMAGE COMPONENT ***
-// This replaces <img> tags. It fetches the image using your API Key
-// so you don't get blocked by rate limits.
-function SecureImage({ src, alt, className }) {
-    const [imageSrc, setImageSrc] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(false);
-
-    useEffect(() => {
-        let isMounted = true;
-        
-        const fetchImage = async () => {
-            setLoading(true);
-            setError(false);
-            try {
-                // We add the key as a bearer token header to bypass rate limits
-                const response = await fetch(src, {
-                    headers: {
-                        'Authorization': `Bearer ${API_KEY}` 
-                    }
-                });
-
-                if (!response.ok) throw new Error('Failed to load');
-
-                const blob = await response.blob();
-                const objectUrl = URL.createObjectURL(blob);
-                
-                if (isMounted) setImageSrc(objectUrl);
-            } catch (err) {
-                console.error("Image load failed", err);
-                if (isMounted) setError(true);
-            } finally {
-                if (isMounted) setLoading(false);
-            }
-        };
-
-        if (src) fetchImage();
-
-        return () => {
-            isMounted = false;
-            if (imageSrc) URL.revokeObjectURL(imageSrc); // Cleanup memory
-        };
-    }, [src]);
-
-    if (loading) return <div className={`bg-stone-100 animate-pulse flex items-center justify-center ${className}`}><Loader2 className="w-6 h-6 animate-spin text-stone-300"/></div>;
-    if (error) return <div className={`bg-stone-100 flex flex-col items-center justify-center text-stone-400 text-xs ${className}`}><span>Failed to load</span></div>;
-
-    return <img src={imageSrc} alt={alt} className={className} />;
-}
-
-const generateAIImageURL = (prompt, seed) => {
-    // We clean prompt to avoid URL errors
-    const safePrompt = encodeURIComponent(prompt.slice(0, 100)); 
-    // We don't put the key in the URL string, the SecureImage component handles it via headers
-    return `https://image.pollinations.ai/prompt/${safePrompt}?width=800&height=600&nologo=true&seed=${seed}&model=flux`;
-}
-
-const generateAIText = async (dishName) => {
-    try {
-        const prompt = `Write a mouth-watering, gourmet 1-sentence description for a menu item called "${dishName}". Make it sound fancy.`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
-
-        const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`, {
-             signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        
-        if (!res.ok) throw new Error("AI Busy");
-        const text = await res.text();
-        return text.replace(/"/g, ''); 
-    } catch (e) {
-        // Fallbacks if AI is busy
-        const fallbacks = [
-             `A delicious serving of ${dishName} prepared with fresh ingredients.`,
-             `Our signature ${dishName}, seasoned to perfection.`,
-             `Classic ${dishName}, a kitchen favorite.`,
-             `Savory ${dishName} served hot and fresh.`
-        ];
-        return fallbacks[Math.floor(Math.random() * fallbacks.length)];
-    }
-}
-
 
 // --- 1. MENU BUILDER ---
 function MenuBuilder({ dishes, refreshData }) {
@@ -248,9 +188,8 @@ function MenuBuilder({ dishes, refreshData }) {
   const handleRegenerateDescription = async (index) => {
     const newSlots = [...menuSlots];
     if (!newSlots[index].main) return;
-
     toast.promise(
-        generateAIText(newSlots[index].main.name).then(text => {
+        getAIText(newSlots[index].main.name).then(text => {
             newSlots[index].description = text;
             setMenuSlots([...newSlots]);
         }),
@@ -263,7 +202,6 @@ function MenuBuilder({ dishes, refreshData }) {
       toast.error('Please fill Main + 2 Sides for all meals');
       return;
     }
-
     setPublishing(true);
     try {
       const { data: menu, error: menuErr } = await supabase
@@ -279,7 +217,7 @@ function MenuBuilder({ dishes, refreshData }) {
           side: slot.side1.name,
           description: slot.description || `Served with ${slot.side1.name} and ${slot.side2.name}`,
           price: 15.00,
-          image_url: generateAIImageURL(`plate of ${slot.main.name}, ${slot.side1.name}, and ${slot.side2.name}`, slot.image_seed)
+          image_url: getAIImageUrl(`plate of ${slot.main.name}, ${slot.side1.name}, and ${slot.side2.name}`, slot.image_seed)
       }));
 
       const { error: mealsErr } = await supabase.from('meals').insert(mealsToInsert);
@@ -320,7 +258,6 @@ function MenuBuilder({ dishes, refreshData }) {
                 <div className="w-10 h-10 bg-[#2c5f4c] rounded-xl flex items-center justify-center text-white font-bold shadow-md font-serif">{idx + 1}</div>
                 <div><h3 className="font-bold text-stone-800">Meal {idx + 1}</h3><p className="text-xs text-stone-400 font-bold uppercase tracking-wider">Main + 2 Sides</p></div>
              </div>
-
              <div className="space-y-5">
                 <DishSelector label="Main Dish" type="main" value={slot.main} dishes={dishes} refreshData={refreshData} onChange={(d) => {
                         const newSlots = [...menuSlots]; newSlots[idx].main = d;
@@ -334,12 +271,11 @@ function MenuBuilder({ dishes, refreshData }) {
                         const newSlots = [...menuSlots]; newSlots[idx].side2 = d; setMenuSlots(newSlots);
                     }} />
              </div>
-
              {slot.main && slot.side1 && slot.side2 && (
                  <div className="mt-6 pt-6 border-t border-stone-100 space-y-4">
                     <div className="relative h-48 rounded-xl overflow-hidden bg-stone-100 border border-stone-200 group/image">
-                        <SecureImage 
-                            src={generateAIImageURL(`plate of ${slot.main.name}, ${slot.side1.name}, and ${slot.side2.name}`, slot.image_seed)}
+                        <img 
+                            src={getAIImageUrl(`plate of ${slot.main.name}, ${slot.side1.name}, and ${slot.side2.name}`, slot.image_seed)}
                             className="w-full h-full object-cover transition-opacity duration-500"
                             alt="Preview"
                         />
@@ -384,7 +320,7 @@ function FoodLibrary({ dishes, refreshData }) {
         {filtered.map(dish => (
           <div key={dish.id} className="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden hover:shadow-lg transition-all group">
             <div className="relative h-48 bg-stone-100">
-              <SecureImage src={dish.image_url} alt={dish.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
+              <img src={dish.image_url} alt={dish.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
               <span className={`absolute top-3 right-3 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${dish.type === 'main' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>{dish.type}</span>
             </div>
             <div className="p-5 flex justify-between items-start">
@@ -519,7 +455,7 @@ function DishSelector({ label, type, value, dishes, refreshData, onChange }) {
       setCreating(true);
       const seed = Math.floor(Math.random() * 1000000);
       const prompt = type === 'main' ? `${query} food` : `side dish ${query}`;
-      const imgUrl = generateAIImageURL(prompt, seed);
+      const imgUrl = getAIImageUrl(prompt, seed);
       const { data, error } = await supabase.from('dishes').insert([{ name: query, type, description: `Freshly prepared ${query}`, image_url: imgUrl, ai_seed: seed }]).select().single();
       if(!error && data) { refreshData(); onChange(data); setQuery(''); setIsOpen(false); toast.success(`Added ${query}`); } 
       else { toast.error("Failed"); }
@@ -531,7 +467,7 @@ function DishSelector({ label, type, value, dishes, refreshData, onChange }) {
         <div>
           <label className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-1 block">{label}</label>
           <div className="flex items-center gap-3 bg-stone-50 border border-stone-200 p-2 rounded-xl group relative">
-             <SecureImage src={value.image_url} className="w-10 h-10 rounded-lg object-cover bg-stone-200" alt="" />
+             <img src={value.image_url} className="w-10 h-10 rounded-lg object-cover bg-stone-200" alt="" />
              <div className="flex-1"><p className="font-bold text-sm text-stone-700">{value.name}</p></div>
              <button onClick={() => onChange(null)} className="p-2 hover:text-red-500 transition-colors"><X className="w-4 h-4" /></button>
           </div>
@@ -551,7 +487,7 @@ function DishSelector({ label, type, value, dishes, refreshData, onChange }) {
             <div className="absolute z-20 w-full mt-2 bg-white rounded-xl shadow-xl border border-stone-100 max-h-60 overflow-y-auto">
               {filtered.map(dish => (
                 <div key={dish.id} onClick={() => { onChange(dish); setIsOpen(false); setQuery(''); }} className="p-3 hover:bg-stone-50 cursor-pointer flex items-center gap-3 border-b border-stone-50 last:border-0">
-                  <SecureImage src={dish.image_url} className="w-8 h-8 rounded object-cover bg-stone-200" alt="" />
+                  <img src={dish.image_url} className="w-8 h-8 rounded object-cover bg-stone-200" alt="" />
                   <p className="font-semibold text-stone-700 text-sm">{dish.name}</p>
                 </div>
               ))}
