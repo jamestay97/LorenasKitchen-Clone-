@@ -14,15 +14,14 @@ import { useNavigate } from 'react-router-dom';
 const API_KEY = 'sk_JhFUbZHtRYTp8gElg6l0IqdUlMAOdwRN'; 
 
 // Helper: Generates URL with Key embedded (Bypasses CORS & Rate Limits)
+// Helper: Generates URL with Key embedded
 const getAIImageUrl = (prompt, seed) => {
-    // 1. Clean the prompt to keep URL short
     const safePrompt = encodeURIComponent(prompt.slice(0, 100));
+    // cacheBuster: A random number that changes every time, forcing a new image
+    const cacheBuster = Math.floor(Math.random() * 1000000);
     
-    // 2. Add 'private=true' & 'apiKey' to use your paid credits
-    // 3. Add 'cb' (Cache Buster) to force browser to ignore old "Limit Reached" images
-    const cacheBuster = Math.random();
-    
-    return `https://image.pollinations.ai/prompt/${safePrompt}?width=800&height=600&nologo=true&seed=${seed}&model=flux&private=true&apiKey=${API_KEY}&cb=${cacheBuster}`;
+    // We add 'nologo=true' and pass the key via 'Authorization' query param if 'ref' fails
+    return `https://image.pollinations.ai/prompt/${safePrompt}?width=800&height=600&nologo=true&seed=${seed}&model=flux&private=true&Authorization=Bearer%20${API_KEY}&cb=${cacheBuster}`;
 }
 
 const getAIText = async (dishName) => {
