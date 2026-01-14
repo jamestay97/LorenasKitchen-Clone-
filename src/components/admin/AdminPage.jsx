@@ -1,211 +1,565 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../supabaseClient';
+import { toast } from 'sonner';
+import { format, startOfWeek, addDays } from 'date-fns';
+import { 
+  Sparkles, Plus, Search, Save, Trash2, Calendar,
+  ChefHat, LogOut, Loader2, Check, X,
+  Users, MessageSquare, Archive, UserPlus, Edit2,
+  RefreshCw, Wand2, Image as ImageIcon
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Tabs, TabsList, TabsTrigger, TabsContent, Card, Input } from '@/components/ui/UiKit';
-import { ArrowLeft, ChefHat, Users, MessageSquare, Book, Archive, Trash2, Plus, Save, Search } from "lucide-react";
-import { toast } from "sonner";
 
-// --- SUB-COMPONENTS (INLINED FOR SIMPLICITY) ---
+// --- CONFIGURATION ---
+// Note: In a real production app, use Environment Variables (import.meta.env...) 
+// for security, but this will work for your current setup.
+const API_KEY = 'sk_JhFUbZHtRYTp8gElg6l0IqdUlMAOdwRN'; 
 
-// 1. MENU EDITOR
-const MenuEditor = ({ activeMenu }) => {
-  const [meals, setMeals] = useState(activeMenu?.meals || []);
-  const [dateLabel, setDateLabel] = useState('JAN 04 - JAN 10');
-
-  useEffect(() => {
-    // Load current menu meals if they exist, otherwise placeholders
-    if (activeMenu?.meals) setMeals(activeMenu.meals);
-  }, [activeMenu]);
-
-  const handleSave = async () => {
-    // 1. Update the Date Label Setting
-    await supabase.from('site_settings').upsert({ setting_key: 'menu_dates', setting_value: dateLabel }, { onConflict: 'setting_key' });
-    
-    // 2. Update the Meals
-    // In a real app we'd update specific rows, but here we can just upsert
-    for (const meal of meals) {
-      if (meal.id) {
-        await supabase.from('meals').upsert(meal);
-      }
-    }
-    toast.success("Menu Updated!");
-  };
-
-  const updateMeal = (index, field, value) => {
-    const newMeals = [...meals];
-    newMeals[index] = { ...newMeals[index], [field]: value };
-    setMeals(newMeals);
-  };
-
-  return (
-    <div className="space-y-6">
-      <Card className="p-6">
-        <h3 className="font-bold mb-4">Menu Settings</h3>
-        <label className="text-sm text-gray-500">Date Label on Homepage</label>
-        <div className="flex gap-2">
-          <Input value={dateLabel} onChange={(e) => setDateLabel(e.target.value)} />
-          <Button onClick={handleSave}><Save className="w-4 h-4 mr-2"/> Save All</Button>
-        </div>
-      </Card>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {meals.map((meal, idx) => (
-          <Card key={idx} className="p-4 space-y-3">
-            <div className="font-bold text-[#1b4d3e]">Meal {idx + 1}</div>
-            <Input placeholder="Title" value={meal.title} onChange={e => updateMeal(idx, 'title', e.target.value)} />
-            <Input placeholder="Description" value={meal.description} onChange={e => updateMeal(idx, 'description', e.target.value)} />
-            <Input placeholder="Price" value={meal.price} onChange={e => updateMeal(idx, 'price', e.target.value)} />
-            <Input placeholder="Image URL" value={meal.image_url} onChange={e => updateMeal(idx, 'image_url', e.target.value)} />
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-// 2. CRM (CLIENTS)
-const CRM = () => {
+export default function AdminDashboard() {
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState('builder');
+  const [initialLoading, setInitialLoading] = useState(true);
+  
+  // Data States
+  const [dishes, setDishes] = useState([]);
+  const [menus, setMenus] = useState([]);
   const [clients, setClients] = useState([]);
-  const [newName, setNewName] = useState('');
-
-  useEffect(() => {
-    const fetchClients = async () => {
-      const { data } = await supabase.from('clients').select('*');
-      setClients(data || []);
-    };
-    fetchClients();
-  }, []);
-
-  const addClient = async () => {
-    if(!newName) return;
-    const { error } = await supabase.from('clients').insert([{ name: newName }]);
-    if(!error) {
-      toast.success("Client added");
-      setNewName('');
-      // Refresh list logic here
-    }
-  };
-
-  return (
-    <Card className="p-6">
-      <div className="flex justify-between mb-4">
-        <h2 className="font-bold text-xl">Client List</h2>
-        <div className="flex gap-2">
-           <Input placeholder="New Client Name" value={newName} onChange={e => setNewName(e.target.value)} className="w-48" />
-           <Button onClick={addClient}><Plus className="w-4 h-4"/></Button>
-        </div>
-      </div>
-      <div className="space-y-2">
-        {clients.length === 0 && <p className="text-gray-400">No clients yet.</p>}
-        {clients.map(c => (
-          <div key={c.id} className="flex justify-between p-3 bg-gray-50 rounded border">
-            <span>{c.name}</span>
-            <span className="text-gray-400 text-sm">{c.email || 'No email'}</span>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-};
-
-// 3. REQUESTS (SUGGESTIONS)
-const Requests = () => {
   const [suggestions, setSuggestions] = useState([]);
 
   useEffect(() => {
-    const fetch = async () => {
-      const { data } = await supabase.from('suggestions').select('*').order('created_at', { ascending: false });
-      setSuggestions(data || []);
-    };
-    fetch();
+    checkSession();
+    fetchData(true);
   }, []);
 
-  const deleteSuggestion = async (id) => {
-    await supabase.from('suggestions').delete().eq('id', id);
-    setSuggestions(suggestions.filter(s => s.id !== id));
-    toast.success("Deleted");
+  const checkSession = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) navigate('/login');
   };
 
-  return (
-    <Card className="p-6">
-      <h2 className="font-bold text-xl mb-4">Customer Suggestions</h2>
-      <div className="space-y-2">
-        {suggestions.map(s => (
-          <div key={s.id} className="flex justify-between items-start p-4 bg-gray-50 rounded border">
-             <div>
-               <p className="font-medium">{s.message}</p>
-               <p className="text-xs text-gray-400">{new Date(s.created_at).toLocaleDateString()}</p>
-             </div>
-             <Button variant="ghost" size="icon" onClick={() => deleteSuggestion(s.id)}>
-               <Trash2 className="w-4 h-4 text-red-400" />
-             </Button>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-};
+  const fetchData = async (isFirstLoad = false) => {
+    if (isFirstLoad) setInitialLoading(true);
+    try {
+      const [dishRes, menuRes, clientRes, suggestionRes] = await Promise.all([
+        supabase.from('dishes').select('*').order('name'),
+        supabase.from('menus').select('*, meals(*)').order('week_start', { ascending: false }),
+        supabase.from('clients').select('*').order('name'),
+        supabase.from('suggestions').select('*').order('created_at', { ascending: false })
+      ]);
 
-// --- MAIN ADMIN PAGE ---
-
-export default function AdminPage() {
-  const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState("menu");
-  const [activeMenu, setActiveMenu] = useState(null);
-
-  useEffect(() => {
-    // Fetch the active menu (meals) on load
-    const loadData = async () => {
-      const { data } = await supabase.from('meals').select('*').order('id');
-      // Structure it to look like the "Menu" object
-      setActiveMenu({ meals: data });
-    };
-    loadData();
-  }, []);
+      if (dishRes.data) setDishes(dishRes.data);
+      if (menuRes.data) setMenus(menuRes.data);
+      if (clientRes.data) setClients(clientRes.data);
+      if (suggestionRes.data) setSuggestions(suggestionRes.data);
+    } catch (error) {
+      console.error("Data load error", error);
+    } finally {
+      if (isFirstLoad) setInitialLoading(false);
+    }
+  };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate('/');
   };
 
+  const newSuggestionCount = suggestions.filter(s => s.status === 'new').length;
+
+  if (initialLoading) return <div className="min-h-screen flex items-center justify-center bg-[#fcfdfa]"><Loader2 className="animate-spin text-[#2c5f4c] w-12 h-12"/></div>;
+
   return (
-    <div className="min-h-screen bg-[#f4f5f0] pb-20 p-4">
-      {/* Header */}
-      <div className="max-w-5xl mx-auto flex justify-between items-center mb-6">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" onClick={() => navigate('/')}><ArrowLeft className="w-4 h-4" /></Button>
-          <h1 className="font-bold text-xl text-[#1b4d3e]">Lorena's Dashboard</h1>
+    <div className="min-h-screen bg-[#fcfdfa] text-slate-800 font-sans">
+      {/* --- HEADER --- */}
+      <div className="bg-white border-b border-stone-200 sticky top-0 z-50 shadow-sm">
+        <div className="max-w-7xl mx-auto px-6 py-5 flex justify-between items-center">
+          <div className="flex items-center gap-5">
+            <div className="bg-[#2c5f4c] p-3 rounded-2xl shadow-lg shadow-[#2c5f4c]/20">
+              <ChefHat className="w-8 h-8 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-[#1a3c30] tracking-tight font-serif">Lorena's Kitchen</h1>
+              <p className="text-xs text-[#6b8c7e] font-bold uppercase tracking-wider">Command Center</p>
+            </div>
+          </div>
+          <button onClick={handleLogout} className="text-sm font-bold text-stone-400 hover:text-red-500 flex items-center gap-2 transition-colors">
+            <LogOut className="w-4 h-4" /> Sign Out
+          </button>
         </div>
-        <Button variant="outline" onClick={handleLogout}>Log Out</Button>
       </div>
 
-      <div className="max-w-5xl mx-auto">
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="mb-6 bg-white p-2 h-auto flex-wrap justify-start gap-2 shadow-sm rounded-xl">
-            <TabsTrigger value="menu" activeTab={activeTab} setActiveTab={setActiveTab} className="px-4 py-2">
-              <ChefHat className="w-4 h-4 mr-2" /> Menu Editor
-            </TabsTrigger>
-            <TabsTrigger value="crm" activeTab={activeTab} setActiveTab={setActiveTab} className="px-4 py-2">
-              <Users className="w-4 h-4 mr-2" /> CRM
-            </TabsTrigger>
-            <TabsTrigger value="requests" activeTab={activeTab} setActiveTab={setActiveTab} className="px-4 py-2">
-              <MessageSquare className="w-4 h-4 mr-2" /> Requests
-            </TabsTrigger>
-          </TabsList>
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        {/* --- TABS --- */}
+        <div className="flex gap-2 mb-10 bg-white p-2 rounded-2xl shadow-sm border border-stone-100 overflow-x-auto">
+          <TabButton active={activeTab === 'builder'} onClick={() => setActiveTab('builder')} icon={<Sparkles className="w-4 h-4" />}>Menu Builder</TabButton>
+          <TabButton active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<Search className="w-4 h-4" />}>Food Library</TabButton>
+          <TabButton active={activeTab === 'crm'} onClick={() => setActiveTab('crm')} icon={<Users className="w-4 h-4" />}>CRM</TabButton>
+          <TabButton active={activeTab === 'requests'} onClick={() => setActiveTab('requests')} icon={<MessageSquare className="w-4 h-4" />} badge={newSuggestionCount}>Requests</TabButton>
+          <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} icon={<Archive className="w-4 h-4" />}>History</TabButton>
+        </div>
 
-          <TabsContent value="menu" activeTab={activeTab}>
-            <MenuEditor activeMenu={activeMenu} />
-          </TabsContent>
-
-          <TabsContent value="crm" activeTab={activeTab}>
-            <CRM />
-          </TabsContent>
-
-          <TabsContent value="requests" activeTab={activeTab}>
-            <Requests />
-          </TabsContent>
-        </Tabs>
+        <div className="animate-in fade-in duration-500">
+            {activeTab === 'builder' && <MenuBuilder dishes={dishes} refreshData={() => fetchData(false)} />}
+            {activeTab === 'library' && <FoodLibrary dishes={dishes} refreshData={() => fetchData(false)} />}
+            {activeTab === 'crm' && <CRM clients={clients} refreshData={() => fetchData(false)} />}
+            {activeTab === 'requests' && <Requests suggestions={suggestions} refreshData={() => fetchData(false)} />}
+            {activeTab === 'history' && <MenuHistory menus={menus} />}
+        </div>
       </div>
     </div>
   );
+}
+
+// --- REUSABLE COMPONENTS ---
+
+function TabButton({ active, onClick, icon, children, badge }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all whitespace-nowrap ${
+        active
+          ? 'bg-[#2c5f4c] text-white shadow-lg shadow-[#2c5f4c]/20 transform scale-105'
+          : 'text-stone-500 hover:bg-stone-50 hover:text-stone-700'
+      }`}
+    >
+      {icon}
+      {children}
+      {badge > 0 && (
+        <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full font-bold shadow-sm ring-2 ring-white">
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// *** THE SMART SECURE IMAGE COMPONENT ***
+// This replaces <img> tags. It fetches the image using your API Key
+// so you don't get blocked by rate limits.
+function SecureImage({ src, alt, className }) {
+    const [imageSrc, setImageSrc] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(false);
+
+    useEffect(() => {
+        let isMounted = true;
+        
+        const fetchImage = async () => {
+            setLoading(true);
+            setError(false);
+            try {
+                // We add the key as a bearer token header to bypass rate limits
+                const response = await fetch(src, {
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}` 
+                    }
+                });
+
+                if (!response.ok) throw new Error('Failed to load');
+
+                const blob = await response.blob();
+                const objectUrl = URL.createObjectURL(blob);
+                
+                if (isMounted) setImageSrc(objectUrl);
+            } catch (err) {
+                console.error("Image load failed", err);
+                if (isMounted) setError(true);
+            } finally {
+                if (isMounted) setLoading(false);
+            }
+        };
+
+        if (src) fetchImage();
+
+        return () => {
+            isMounted = false;
+            if (imageSrc) URL.revokeObjectURL(imageSrc); // Cleanup memory
+        };
+    }, [src]);
+
+    if (loading) return <div className={`bg-stone-100 animate-pulse flex items-center justify-center ${className}`}><Loader2 className="w-6 h-6 animate-spin text-stone-300"/></div>;
+    if (error) return <div className={`bg-stone-100 flex flex-col items-center justify-center text-stone-400 text-xs ${className}`}><span>Failed to load</span></div>;
+
+    return <img src={imageSrc} alt={alt} className={className} />;
+}
+
+const generateAIImageURL = (prompt, seed) => {
+    // We clean prompt to avoid URL errors
+    const safePrompt = encodeURIComponent(prompt.slice(0, 100)); 
+    // We don't put the key in the URL string, the SecureImage component handles it via headers
+    return `https://image.pollinations.ai/prompt/${safePrompt}?width=800&height=600&nologo=true&seed=${seed}&model=flux`;
+}
+
+const generateAIText = async (dishName) => {
+    try {
+        const prompt = `Write a mouth-watering, gourmet 1-sentence description for a menu item called "${dishName}". Make it sound fancy.`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3s timeout
+
+        const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`, {
+             signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        
+        if (!res.ok) throw new Error("AI Busy");
+        const text = await res.text();
+        return text.replace(/"/g, ''); 
+    } catch (e) {
+        // Fallbacks if AI is busy
+        const fallbacks = [
+             `A delicious serving of ${dishName} prepared with fresh ingredients.`,
+             `Our signature ${dishName}, seasoned to perfection.`,
+             `Classic ${dishName}, a kitchen favorite.`,
+             `Savory ${dishName} served hot and fresh.`
+        ];
+        return fallbacks[Math.floor(Math.random() * fallbacks.length)];
+    }
+}
+
+
+// --- 1. MENU BUILDER ---
+function MenuBuilder({ dishes, refreshData }) {
+  const [weekStart, setWeekStart] = useState(format(startOfWeek(new Date(), { weekStartsOn: 0 }), 'yyyy-MM-dd'));
+  const [publishing, setPublishing] = useState(false);
+  
+  const [menuSlots, setMenuSlots] = useState([
+    { main: null, side1: null, side2: null, description: '', image_seed: 123 },
+    { main: null, side1: null, side2: null, description: '', image_seed: 456 },
+    { main: null, side1: null, side2: null, description: '', image_seed: 789 }
+  ]);
+
+  const startDateObj = new Date(weekStart + 'T00:00:00'); 
+  const endDateObj = addDays(startDateObj, 8); 
+  const weekEnd = format(endDateObj, 'yyyy-MM-dd');
+  const displayRange = `${format(startDateObj, 'MMM dd')} - ${format(endDateObj, 'MMM dd')}`;
+
+  const handleDateSelect = (e) => {
+    const selected = new Date(e.target.value + 'T00:00:00');
+    const start = startOfWeek(selected, { weekStartsOn: 0 });
+    setWeekStart(format(start, 'yyyy-MM-dd'));
+  };
+
+  const handleRegenerateImage = (index) => {
+    const newSlots = [...menuSlots];
+    if (!newSlots[index].main) return;
+    newSlots[index].image_seed = Math.floor(Math.random() * 999999);
+    setMenuSlots(newSlots);
+    toast.success("Regenerating image...");
+  }
+
+  const handleRegenerateDescription = async (index) => {
+    const newSlots = [...menuSlots];
+    if (!newSlots[index].main) return;
+
+    toast.promise(
+        generateAIText(newSlots[index].main.name).then(text => {
+            newSlots[index].description = text;
+            setMenuSlots([...newSlots]);
+        }),
+        { loading: 'Writing...', success: 'Updated!', error: 'Failed' }
+    );
+  }
+
+  const handlePublish = async () => {
+    if (menuSlots.some(s => !s.main || !s.side1 || !s.side2)) {
+      toast.error('Please fill Main + 2 Sides for all meals');
+      return;
+    }
+
+    setPublishing(true);
+    try {
+      const { data: menu, error: menuErr } = await supabase
+        .from('menus')
+        .insert([{ week_start: weekStart, week_end: weekEnd, status: 'active' }])
+        .select().single();
+
+      if (menuErr) throw menuErr;
+
+      const mealsToInsert = menuSlots.map(slot => ({
+          menu_id: menu.id,
+          title: slot.main.name,
+          side: slot.side1.name,
+          description: slot.description || `Served with ${slot.side1.name} and ${slot.side2.name}`,
+          price: 15.00,
+          image_url: generateAIImageURL(`plate of ${slot.main.name}, ${slot.side1.name}, and ${slot.side2.name}`, slot.image_seed)
+      }));
+
+      const { error: mealsErr } = await supabase.from('meals').insert(mealsToInsert);
+      if (mealsErr) throw mealsErr;
+
+      toast.success(`Menu Published Successfully!`);
+      refreshData();
+      
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to publish: ' + err.message);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 flex flex-col md:flex-row justify-between items-center gap-4">
+        <div>
+           <label className="text-xs font-bold text-stone-400 uppercase tracking-wider">Target Week</label>
+           <div className="flex items-center gap-3 mt-1">
+              <Calendar className="w-5 h-5 text-[#2c5f4c]" />
+              <input type="date" value={weekStart} onChange={handleDateSelect} className="font-serif font-bold text-xl text-stone-800 outline-none bg-transparent cursor-pointer" />
+           </div>
+           <div className="text-sm text-[#2c5f4c] font-bold mt-1 bg-[#e8f5e9] inline-block px-3 py-1 rounded-full">{displayRange}</div>
+        </div>
+        <button onClick={handlePublish} disabled={publishing} className="bg-[#2c5f4c] text-white px-8 py-4 rounded-xl font-bold shadow-lg shadow-[#2c5f4c]/20 hover:scale-105 transition-all flex items-center gap-3 disabled:opacity-50">
+            {publishing ? <Loader2 className="animate-spin" /> : <Save className="w-5 h-5" />}
+            {publishing ? 'Publishing...' : 'Publish Menu Live'}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {menuSlots.map((slot, idx) => (
+          <div key={idx} className="bg-white rounded-3xl shadow-sm border border-stone-100 p-6 relative group hover:shadow-xl transition-all duration-300">
+             <div className="flex items-center gap-3 mb-6 border-b border-stone-100 pb-4">
+                <div className="w-10 h-10 bg-[#2c5f4c] rounded-xl flex items-center justify-center text-white font-bold shadow-md font-serif">{idx + 1}</div>
+                <div><h3 className="font-bold text-stone-800">Meal {idx + 1}</h3><p className="text-xs text-stone-400 font-bold uppercase tracking-wider">Main + 2 Sides</p></div>
+             </div>
+
+             <div className="space-y-5">
+                <DishSelector label="Main Dish" type="main" value={slot.main} dishes={dishes} refreshData={refreshData} onChange={(d) => {
+                        const newSlots = [...menuSlots]; newSlots[idx].main = d;
+                        if(d && !newSlots[idx].description) handleRegenerateDescription(idx);
+                        setMenuSlots(newSlots);
+                    }} />
+                <DishSelector label="Side 1" type="side" value={slot.side1} dishes={dishes} refreshData={refreshData} onChange={(d) => {
+                        const newSlots = [...menuSlots]; newSlots[idx].side1 = d; setMenuSlots(newSlots);
+                    }} />
+                <DishSelector label="Side 2" type="side" value={slot.side2} dishes={dishes} refreshData={refreshData} onChange={(d) => {
+                        const newSlots = [...menuSlots]; newSlots[idx].side2 = d; setMenuSlots(newSlots);
+                    }} />
+             </div>
+
+             {slot.main && slot.side1 && slot.side2 && (
+                 <div className="mt-6 pt-6 border-t border-stone-100 space-y-4">
+                    <div className="relative h-48 rounded-xl overflow-hidden bg-stone-100 border border-stone-200 group/image">
+                        <SecureImage 
+                            src={generateAIImageURL(`plate of ${slot.main.name}, ${slot.side1.name}, and ${slot.side2.name}`, slot.image_seed)}
+                            className="w-full h-full object-cover transition-opacity duration-500"
+                            alt="Preview"
+                        />
+                        <button onClick={() => handleRegenerateImage(idx)} className="absolute bottom-2 right-2 bg-white/90 backdrop-blur text-[#2c5f4c] p-2 rounded-lg shadow-sm hover:scale-110 transition-all font-bold text-xs flex items-center gap-1">
+                            <RefreshCw className="w-3 h-3" /> Redo
+                        </button>
+                    </div>
+                    <div className="relative">
+                        <label className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-1 block">Description</label>
+                        <textarea value={slot.description} onChange={(e) => {
+                                const newSlots = [...menuSlots]; newSlots[idx].description = e.target.value; setMenuSlots(newSlots);
+                            }} className="w-full text-sm p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 ring-[#2c5f4c]/20 min-h-[80px]" />
+                        <button onClick={() => handleRegenerateDescription(idx)} className="absolute top-8 right-2 p-1.5 text-stone-400 hover:text-[#2c5f4c] rounded-lg transition-all"><Wand2 className="w-4 h-4" /></button>
+                    </div>
+                 </div>
+             )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// --- 2. FOOD LIBRARY ---
+function FoodLibrary({ dishes, refreshData }) {
+  const [search, setSearch] = useState('');
+  const handleDelete = async (id) => {
+      if(!window.confirm("Delete this dish?")) return;
+      await supabase.from('dishes').delete().eq('id', id);
+      toast.success("Dish deleted");
+      refreshData();
+  }
+  const filtered = dishes.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 relative">
+          <Search className="absolute left-9 top-9 w-5 h-5 text-stone-400" />
+          <input type="text" placeholder="Search library..." value={search} onChange={e => setSearch(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:border-[#2c5f4c]" />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {filtered.map(dish => (
+          <div key={dish.id} className="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden hover:shadow-lg transition-all group">
+            <div className="relative h-48 bg-stone-100">
+              <SecureImage src={dish.image_url} alt={dish.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
+              <span className={`absolute top-3 right-3 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${dish.type === 'main' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>{dish.type}</span>
+            </div>
+            <div className="p-5 flex justify-between items-start">
+              <div><h3 className="font-bold text-stone-800 text-lg mb-1">{dish.name}</h3><p className="text-stone-500 text-xs line-clamp-2">{dish.description}</p></div>
+              <button onClick={() => handleDelete(dish.id)} className="text-stone-300 hover:text-red-500 transition-colors p-2 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// --- 3. CRM ---
+function CRM({ clients, refreshData }) {
+  const [showModal, setShowModal] = useState(false);
+  const [formData, setFormData] = useState({ id: null, name: '', email: '', phone: '', address: '', notes: '' });
+  const handleOpenAdd = () => { setFormData({ id: null, name: '', email: '', phone: '', address: '', notes: '' }); setShowModal(true); }
+  const handleOpenEdit = (client) => { setFormData(client); setShowModal(true); }
+  const handleDelete = async (id) => {
+    if(!window.confirm("Delete this client?")) return;
+    await supabase.from('clients').delete().eq('id', id);
+    refreshData();
+  }
+  const handleSave = async () => {
+      const { id, ...data } = formData;
+      if (id) await supabase.from('clients').update(data).eq('id', id);
+      else await supabase.from('clients').insert([data]);
+      setShowModal(false); refreshData();
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 flex justify-between items-center">
+         <h2 className="font-bold text-xl text-stone-800 font-serif">Customer Database</h2>
+         <button onClick={handleOpenAdd} className="bg-[#2c5f4c] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-[#234b3c]"><UserPlus className="w-4 h-4" /> Add Client</button>
+      </div>
+      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden">
+        <table className="w-full">
+            <thead className="bg-stone-50 border-b border-stone-100">
+                <tr><th className="px-6 py-4 text-left text-xs font-bold text-stone-500 uppercase tracking-wider">Name</th><th className="px-6 py-4 text-left text-xs font-bold text-stone-500 uppercase tracking-wider">Contact</th><th className="px-6 py-4 text-left text-xs font-bold text-stone-500 uppercase tracking-wider">Actions</th></tr>
+            </thead>
+            <tbody className="divide-y divide-stone-100">
+                {clients.map(c => (
+                    <tr key={c.id} className="hover:bg-stone-50 transition-colors">
+                        <td className="px-6 py-4 font-bold text-stone-700">{c.name}</td>
+                        <td className="px-6 py-4"><div className="text-sm text-stone-600 font-medium">{c.email}</div><div className="text-xs text-stone-400">{c.phone}</div></td>
+                        <td className="px-6 py-4 flex gap-2">
+                            <button onClick={() => handleOpenEdit(c)} className="p-2 text-stone-400 hover:text-[#2c5f4c] hover:bg-green-50 rounded-lg"><Edit2 className="w-4 h-4" /></button>
+                            <button onClick={() => handleDelete(c.id)} className="p-2 text-stone-400 hover:text-red-500 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+                        </td>
+                    </tr>
+                ))}
+            </tbody>
+        </table>
+      </div>
+      {showModal && (
+         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setShowModal(false)}>
+            <div className="bg-white p-8 rounded-2xl w-full max-w-md space-y-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="font-bold text-xl font-serif text-[#2c5f4c]">{formData.id ? 'Edit Client' : 'New Client'}</h3>
+                <input placeholder="Name" className="w-full border p-3 rounded-xl bg-stone-50" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                <input placeholder="Email" className="w-full border p-3 rounded-xl bg-stone-50" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} />
+                <input placeholder="Phone" className="w-full border p-3 rounded-xl bg-stone-50" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
+                <textarea placeholder="Notes" className="w-full border p-3 rounded-xl bg-stone-50 min-h-[100px]" value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} />
+                <button onClick={handleSave} className="w-full bg-[#2c5f4c] text-white py-3 rounded-xl font-bold hover:bg-[#234b3c]">Save Changes</button>
+            </div>
+         </div>
+      )}
+    </div>
+  )
+}
+
+// --- 4. REQUESTS ---
+function Requests({ suggestions, refreshData }) {
+    const handleStatus = async (id, status) => { await supabase.from('suggestions').update({ status }).eq('id', id); refreshData(); }
+    const handleDelete = async (id) => { if(!window.confirm("Delete?")) return; await supabase.from('suggestions').delete().eq('id', id); refreshData(); }
+
+    return (
+        <div className="space-y-4">
+            {suggestions.map(s => (
+                <div key={s.id} className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm flex justify-between items-start hover:shadow-md transition-all">
+                    <div>
+                        <div className="flex gap-2 mb-2">
+                            <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full ${s.status === 'new' ? 'bg-green-100 text-green-700' : 'bg-stone-100 text-stone-500'}`}>{s.status}</span>
+                            <span className="text-xs text-stone-400 font-medium">{s.user_email || 'Anonymous'}</span>
+                        </div>
+                        <p className="font-medium text-stone-800">{s.message || s.content}</p>
+                    </div>
+                    <div className="flex gap-2">
+                      {s.status === 'new' && <button onClick={() => handleStatus(s.id, 'reviewed')} className="bg-stone-50 p-2 rounded-lg hover:bg-green-100 hover:text-green-600"><Check className="w-4 h-4" /></button>}
+                      <button onClick={() => handleDelete(s.id)} className="bg-stone-50 p-2 rounded-lg hover:bg-red-50 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                    </div>
+                </div>
+            ))}
+        </div>
+    )
+}
+
+// --- 5. HISTORY ---
+function MenuHistory({ menus }) {
+    return (
+        <div className="grid gap-4">
+            {menus.map(m => (
+                <div key={m.id} className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm hover:shadow-md transition-all">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="font-bold text-[#2c5f4c] font-serif">Week of {m.week_start}</h3>
+                        <span className="bg-green-100 text-green-700 text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-wider">Published</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        {m.meals && m.meals.map((meal, i) => (
+                            <div key={i} className="bg-stone-50 p-3 rounded-xl text-sm border border-stone-100">
+                                <span className="font-bold block text-stone-700 mb-1">{meal.title}</span>
+                                <span className="text-stone-500 text-xs line-clamp-2">{meal.description}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            ))}
+        </div>
+    )
+}
+
+// --- DISH SELECTOR ---
+function DishSelector({ label, type, value, dishes, refreshData, onChange }) {
+    const [query, setQuery] = useState('');
+    const [isOpen, setIsOpen] = useState(false);
+    const [creating, setCreating] = useState(false);
+    const filtered = dishes.filter(d => d.type === type && d.name.toLowerCase().includes(query.toLowerCase()));
+  
+    const handleCreate = async () => {
+      if(!query) return;
+      setCreating(true);
+      const seed = Math.floor(Math.random() * 1000000);
+      const prompt = type === 'main' ? `${query} food` : `side dish ${query}`;
+      const imgUrl = generateAIImageURL(prompt, seed);
+      const { data, error } = await supabase.from('dishes').insert([{ name: query, type, description: `Freshly prepared ${query}`, image_url: imgUrl, ai_seed: seed }]).select().single();
+      if(!error && data) { refreshData(); onChange(data); setQuery(''); setIsOpen(false); toast.success(`Added ${query}`); } 
+      else { toast.error("Failed"); }
+      setCreating(false);
+    };
+  
+    if (value) {
+      return (
+        <div>
+          <label className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-1 block">{label}</label>
+          <div className="flex items-center gap-3 bg-stone-50 border border-stone-200 p-2 rounded-xl group relative">
+             <SecureImage src={value.image_url} className="w-10 h-10 rounded-lg object-cover bg-stone-200" alt="" />
+             <div className="flex-1"><p className="font-bold text-sm text-stone-700">{value.name}</p></div>
+             <button onClick={() => onChange(null)} className="p-2 hover:text-red-500 transition-colors"><X className="w-4 h-4" /></button>
+          </div>
+        </div>
+      );
+    }
+  
+    return (
+      <div className="relative">
+        <label className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-1 block">{label}</label>
+        <div className="relative">
+          <Search className="absolute left-3 top-3 w-4 h-4 text-stone-400" />
+          <input type="text" value={query} onChange={e => { setQuery(e.target.value); setIsOpen(true); }} onFocus={() => setIsOpen(true)} placeholder={`Search or add ${type}...`} className="w-full pl-10 pr-4 py-2.5 border border-stone-200 rounded-xl outline-none focus:border-[#2c5f4c] text-sm font-medium bg-white" />
+        </div>
+        {isOpen && (
+          <>
+            <div className="absolute z-20 w-full mt-2 bg-white rounded-xl shadow-xl border border-stone-100 max-h-60 overflow-y-auto">
+              {filtered.map(dish => (
+                <div key={dish.id} onClick={() => { onChange(dish); setIsOpen(false); setQuery(''); }} className="p-3 hover:bg-stone-50 cursor-pointer flex items-center gap-3 border-b border-stone-50 last:border-0">
+                  <SecureImage src={dish.image_url} className="w-8 h-8 rounded object-cover bg-stone-200" alt="" />
+                  <p className="font-semibold text-stone-700 text-sm">{dish.name}</p>
+                </div>
+              ))}
+              {query && <button onClick={handleCreate} disabled={creating} className="w-full p-3 bg-[#2c5f4c]/5 text-[#2c5f4c] font-bold text-xs hover:bg-[#2c5f4c]/10 transition-colors flex items-center justify-center gap-2">{creating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />} Create "{query}"</button>}
+            </div>
+            <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
+          </>
+        )}
+      </div>
+    );
 }
