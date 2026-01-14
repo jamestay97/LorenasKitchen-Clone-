@@ -1,21 +1,26 @@
-import React, { useEffect, useState } from 'react'
-import { supabase } from '../supabaseClient'
-import { Link } from 'react-router-dom'
-import MealCard from '../components/MealCard'
-import { toast } from 'sonner'
-import { format } from 'date-fns'
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../../supabaseClient'; 
+import { Link } from 'react-router-dom';
+import { format } from 'date-fns';  // <-- Added this!
+import { toast } from 'sonner';     // <-- Added this!
+
+// Components
+import MealCard from './MealCard';  // Correct path (one dot)
+import InfoBar from './InfoBar';    // Correct path (one dot)
 
 export default function Home() {
-  const [meals, setMeals] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [dateRange, setDateRange] = useState('')
-  const [suggestionText, setSuggestionText] = useState('')
-  const [userEmail, setUserEmail] = useState('')
-  const [sendingSuggestion, setSendingSuggestion] = useState(false)
+  const [meals, setMeals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [dateRange, setDateRange] = useState('');
+  
+  // Suggestion State
+  const [suggestionText, setSuggestionText] = useState('');
+  const [userEmail, setUserEmail] = useState('');
+  const [sendingSuggestion, setSendingSuggestion] = useState(false);
 
   useEffect(() => {
-    fetchCurrentMenu()
-  }, [])
+    fetchCurrentMenu();
+  }, []);
 
   const fetchCurrentMenu = async () => {
     try {
@@ -25,66 +30,71 @@ export default function Home() {
         .eq('status', 'active')
         .order('created_at', { ascending: false })
         .limit(1)
-        .single()
+        .single();
 
-      if (error) throw error
-
-      if (data && data.meals) {
-        setMeals(data.meals)
-        const start = format(new Date(data.week_start), 'MMM dd')
-        const end = format(new Date(data.week_end), 'MMM dd')
-        setDateRange(`${start} - ${end}`.toUpperCase())
+      if (error) {
+        // If no active menu, try to just get meals directly (fallback)
+        const { data: mealData } = await supabase.from('meals').select('*').order('id');
+        if (mealData) setMeals(mealData);
+      } else if (data && data.meals) {
+        setMeals(data.meals);
+        if (data.week_start && data.week_end) {
+            const start = format(new Date(data.week_start), 'MMM dd');
+            const end = format(new Date(data.week_end), 'MMM dd');
+            setDateRange(`${start} - ${end}`.toUpperCase());
+        }
       }
     } catch (error) {
-      console.error('Error:', error)
+      console.error('Error:', error);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const handleSendSuggestion = async () => {
     if (!suggestionText.trim()) {
-      toast.error('Please enter a suggestion')
-      return
+      toast.error('Please enter a suggestion');
+      return;
     }
 
-    setSendingSuggestion(true)
+    setSendingSuggestion(true);
 
     try {
       const { error } = await supabase.from('suggestions').insert([
         {
-          content: suggestionText,
+          message: suggestionText, // Note: 'message' matches your DB column
           user_email: userEmail || null,
           status: 'new',
         },
-      ])
+      ]);
 
-      if (error) throw error
+      if (error) throw error;
 
-      toast.success('Thanks for your suggestion!')
-      setSuggestionText('')
-      setUserEmail('')
+      toast.success('Thanks for your suggestion!');
+      setSuggestionText('');
+      setUserEmail('');
     } catch (error) {
-      console.error('Error:', error)
-      toast.error('Failed to send suggestion')
+      console.error('Error:', error);
+      toast.error('Failed to send suggestion');
     } finally {
-      setSendingSuggestion(false)
+      setSendingSuggestion(false);
     }
-  }
+  };
 
   if (loading) {
     return (
       <div className="p-20 text-center font-script text-3xl text-[#1b4d3e]">
         Cooking up the menu...
       </div>
-    )
+    );
   }
 
   return (
     <div className="w-full max-w-5xl mx-auto pb-20 px-4">
+      {/* HEADER */}
       <div className="text-center mb-12 mt-8">
         <Link to="/login" className="inline-block">
-          <h1 className="text-5xl md:text-6xl font-script text-[#1b4d3e] mb-2 hover:opacity-90">
+          <h1 className="text-5xl md:text-6xl font-script text-[#1b4d3e] mb-2 hover:opacity-90 transform -rotate-2">
             Lorena's Home Cooked Meals
           </h1>
         </Link>
@@ -93,46 +103,30 @@ export default function Home() {
         </div>
       </div>
 
+      {/* MEALS GRID */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
         {meals.map((meal, index) => (
           <MealCard key={meal.id || index} meal={meal} index={index} />
         ))}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-center border-t border-gray-200 pt-8 mb-12">
-        <div>
-          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">
-            PRICING
-          </h3>
-          <p className="text-lg font-bold text-[#1b4d3e]">
-            $150 <span className="text-sm font-normal text-gray-500">/ 10 meals</span>
-          </p>
-        </div>
-        <div>
-          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">
-            TO ORDER
-          </h3>
-          <p className="text-sm font-bold text-gray-700">📱 Text (813) 426-5096</p>
-        </div>
-        <div>
-          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1">
-            PAYMENT
-          </h3>
-          <p className="text-sm font-bold text-gray-700">Zelle / Apple Cash</p>
-          <p className="text-xs text-gray-400">lorenaolivar03@gmail.com</p>
-        </div>
-      </div>
+      {/* PRICING INFO BAR (Using the Component) */}
+      <InfoBar />
 
-      <div className="flex justify-center mb-12">
+      {/* VIEW GALLERY BUTTON */}
+      <div className="flex justify-center mb-12 mt-12">
         <Link to="/gallery">
-          <button className="bg-white border border-gray-300 text-gray-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50">
+          <button className="bg-white border border-gray-300 text-gray-600 px-6 py-2.5 rounded-xl text-sm font-medium hover:bg-gray-50 hover:border-gray-400 transition-all shadow-sm">
             🖼️ View Gallery
           </button>
         </Link>
       </div>
 
+      {/* BOTTOM SECTION */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white p-8 rounded-3xl border border-dashed border-gray-300 text-center">
+        
+        {/* Suggestion Box */}
+        <div className="bg-white p-8 rounded-[24px] border border-dashed border-gray-300 text-center">
           <h3 className="font-script text-2xl text-[#1b4d3e] mb-2">
             Make a Suggestion
           </h3>
@@ -145,37 +139,42 @@ export default function Home() {
             value={userEmail}
             onChange={(e) => setUserEmail(e.target.value)}
             placeholder="your@email.com (optional)"
-            className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm mb-2 focus:outline-none focus:border-[#1b4d3e]"
+            className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 text-sm mb-2 focus:outline-none focus:border-[#1b4d3e]"
           />
 
           <textarea
             value={suggestionText}
             onChange={(e) => setSuggestionText(e.target.value)}
             placeholder="I'd love to see the Enchiladas again..."
-            className="w-full bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm mb-3 focus:outline-none focus:border-[#1b4d3e] h-24 resize-none"
+            className="w-full bg-gray-50 border border-gray-200 rounded-xl p-3 text-sm mb-3 focus:outline-none focus:border-[#1b4d3e] h-24 resize-none"
           />
 
           <button
             onClick={handleSendSuggestion}
             disabled={sendingSuggestion}
-            className="w-full bg-[#9CA3AF] text-white py-2 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-gray-500 transition-colors disabled:opacity-50"
+            className="w-full bg-gray-900 text-white py-3 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-black transition-colors disabled:opacity-50"
           >
             {sendingSuggestion ? 'Sending...' : 'Send Suggestion'}
           </button>
         </div>
 
-        <div className="bg-[#1b4d3e] p-8 rounded-3xl text-center text-white flex flex-col justify-center items-center">
-          <h3 className="font-script text-2xl mb-2">Past Menus</h3>
-          <p className="text-xs text-gray-300 mb-6 max-w-xs">
-            Missed a week? Check out our archive of delicious home cooked meals.
-          </p>
-          <Link to="/gallery">
-            <button className="border border-white/30 text-white px-6 py-2 rounded-lg text-sm hover:bg-white/10 transition-colors">
-              ↻ View Archive
-            </button>
-          </Link>
+        {/* Past Menus Link */}
+        <div className="bg-[#1b4d3e] p-8 rounded-[24px] text-center text-white flex flex-col justify-center items-center relative overflow-hidden">
+          <div className="absolute inset-0 opacity-10" style={{backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '20px 20px'}}></div>
+          <div className="relative z-10">
+            <h3 className="font-script text-3xl mb-2">Past Menus</h3>
+            <p className="text-xs text-gray-300 mb-6 max-w-xs mx-auto">
+                Missed a week? Check out our archive of delicious home cooked meals.
+            </p>
+            <Link to="/gallery">
+                <button className="bg-white/10 border border-white/30 text-white px-6 py-2 rounded-xl text-sm font-bold hover:bg-white/20 transition-colors backdrop-blur-sm">
+                ↻ View Archive
+                </button>
+            </Link>
+          </div>
         </div>
+
       </div>
     </div>
-  )
+  );
 }
