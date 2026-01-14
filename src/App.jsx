@@ -1,11 +1,10 @@
 import React from 'react';
-// IMPORT HashRouter (renamed to Router for convenience)
-import { HashRouter as Router, Routes, Route } from 'react-router-dom'; 
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './Layout';
 import Home from './components/public/Home';
 import AdminPage from './components/admin/AdminPage';
 import AdminLogin from './components/admin/AdminLogin';
-import { Navigate } from 'react-router-dom';
+import Gallery from './components/public/Gallery';
 
 function App() {
   return (
@@ -17,10 +16,12 @@ function App() {
           <Route path="/admin" element={<AdminPage />} />
           <Route path="/gallery" element={<Gallery />} />
           
-          {/* ADD THIS LINE: If the route is weird (like an error), go back Home */}
+          {/* Catch-All Route: Redirects errors back to Home */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
     </Router>
   );
 }
+
+export default App;
