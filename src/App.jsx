@@ -1,23 +1,34 @@
-import React from 'react';
-// CHANGE: Import HashRouter instead of BrowserRouter
-import { HashRouter as Router, Routes, Route } from 'react-router-dom'; 
-import Layout from './Layout';
-import Home from './components/public/Home';
-import AdminPage from './components/admin/AdminPage';
-import AdminLogin from './components/admin/AdminLogin';
+import React from 'react'
+import { HashRouter as Router, Routes, Route } from 'react-router-dom'
+import { Toaster } from 'sonner'
+import Navbar from './components/Navbar'
+import Home from './pages/Home'
+import Gallery from './pages/Gallery'
+import AdminLogin from './pages/admin/AdminLogin'
+import AdminDashboard from './pages/admin/AdminDashboard'
+import ProtectedRoute from './components/ProtectedRoute'
 
 function App() {
   return (
-    <Router> {/* This is now HashRouter */}
-      <Layout>
+    <Router>
+      <Toaster position="top-center" />
+      <div className="min-h-screen">
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route path="/" element={<><Navbar /><Home /></>} />
+          <Route path="/gallery" element={<><Navbar /><Gallery /></>} />
           <Route path="/login" element={<AdminLogin />} />
-          <Route path="/admin" element={<AdminPage />} />
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute>
+                <AdminDashboard />
+              </ProtectedRoute>
+            }
+          />
         </Routes>
-      </Layout>
+      </div>
     </Router>
-  );
+  )
 }
 
-export default App;
+export default App
