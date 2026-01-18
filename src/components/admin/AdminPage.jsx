@@ -1,57 +1,322 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../supabaseClient';
 import { toast } from 'sonner';
-import { format, startOfWeek, addDays } from 'date-fns';
-import { 
-  Sparkles, Plus, Search, Save, Trash2, Calendar,
-  ChefHat, LogOut, Loader2, Check, X,
+import { format, startOfWeek, addDays, parseISO } from 'date-fns';
+import {
+  Sparkles, Plus, Search, Save, Trash2,
+  ChefHat, LogOut, Loader2, X,
   Users, MessageSquare, Archive, UserPlus, Edit2,
-  RefreshCw, Wand2
+  RefreshCw, Wand2, Image as ImageIcon, LayoutGrid,
+  ShieldCheck, AlertCircle, ExternalLink, Zap, Upload,
+  Eye, EyeOff, CheckCircle, CheckSquare, Square, Check, 
+  MapPin, Phone, Mail, FileText, ShoppingCart, Activity,
+  Printer, ArrowRight, Hash, BadgeDollarSign,
+  Cpu, ScanLine, Layers, Utensils, Settings
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-// --- CONFIGURATION ---
-const API_KEY = 'sk_JhFUbZHtRYTp8gElg6l0IqdUlMAOdwRN'; 
+// --- CONSTANTS ---
+const DEFAULT_STAPLES = [
+    { name: "Olive Oil", icon: "🫒" },
+    { name: "Vegetable Oil", icon: "🌻" },
+    { name: "Salt", icon: "🧂" },
+    { name: "Black Pepper", icon: "⚫" },
+    { name: "Garlic Cloves", icon: "🧄" },
+    { name: "Butter", icon: "🧈" },
+    { name: "Eggs", icon: "🥚" },
+    { name: "Milk", icon: "🥛" },
+    { name: "Onions", icon: "🧅" },
+    { name: "Rice", icon: "🍚" },
+    { name: "Flour", icon: "🌾" },
+    { name: "Sugar", icon: "🍬" }
+];
 
-// Helper: Generates URL with Key embedded (Bypasses CORS & Rate Limits)
-// Helper: Generates URL with Key embedded
-const getAIImageUrl = (prompt, seed) => {
-    const safePrompt = encodeURIComponent(prompt.slice(0, 100));
-    // cacheBuster: A random number that changes every time, forcing a new image
-    const cacheBuster = Math.floor(Math.random() * 1000000);
-    
-    // We add 'nologo=true' and pass the key via 'Authorization' query param if 'ref' fails
-    return `https://image.pollinations.ai/prompt/${safePrompt}?width=800&height=600&nologo=true&seed=${seed}&model=flux&private=true&Authorization=Bearer%20${API_KEY}&cb=${cacheBuster}`;
-}
+// --- ROBUST HELPER FUNCTIONS (Personal Shopper Edition) ---
 
-const getAIText = async (dishName) => {
+// 0. DELAY HELPER (Prevents 429 Errors)
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// 1. SELF-HEALING JSON PARSER
+const extractJSON = (text) => {
+    if (!text) return null;
     try {
-        const prompt = `Describe ${dishName} in 10 words. Gourmet style.`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000); // 4s timeout
+        let cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        const firstBracket = cleanText.indexOf('[');
+        const lastBracket = cleanText.lastIndexOf(']');
+        const firstCurly = cleanText.indexOf('{');
+        const lastCurly = cleanText.lastIndexOf('}');
 
-        const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}?private=true&apiKey=${API_KEY}`, {
-             signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        
-        if (!res.ok) return `Freshly prepared ${dishName}.`;
-        const text = await res.text();
-        return text.replace(/"/g, '') || `Freshly prepared ${dishName}.`; 
+        let jsonString = '';
+        if (firstBracket !== -1 && lastBracket !== -1) {
+            jsonString = cleanText.substring(firstBracket, lastBracket + 1);
+        } else if (firstCurly !== -1 && lastCurly !== -1) {
+            jsonString = cleanText.substring(firstCurly, lastCurly + 1);
+        } else {
+            return null;
+        }
+        jsonString = jsonString.replace(/,\s*]/g, ']').replace(/,\s*}/g, '}');
+        return JSON.parse(jsonString);
     } catch (e) {
-        return `Freshly prepared ${dishName}.`;
+        console.error("JSON Parse Error:", e);
+        return null;
     }
-}
+};
 
+// 2. RECIPE BREAKER (Step 1: Extract Raw Ingredients)
+const breakDownRecipesAI = async (mealRequests) => {
+    // Retry logic loop
+    for(let attempt = 0; attempt < 3; attempt++) {
+        try {
+            await delay(1000 + (attempt * 2000)); // Exponential backoff
+
+            const prompt = `
+            You are a professional Chef.
+            Break down these meal requests into a consolidated shopping list of INDIVIDUAL raw ingredients.
+            
+            MEALS REQUESTED:
+            ${mealRequests.join('\n')}
+
+            CRITICAL INSTRUCTION:
+            - EXTRACT ingredients for both the MAIN DISH and the SIDE DISHES.
+            - Do NOT ignore the sides. 
+            - Example: "Burger with Fries" -> List Ground Beef, Buns, AND Potatoes, Oil.
+            - Ignore basic tap water.
+
+            RULES:
+            1. Combine quantities (e.g. if 2 meals need onions, list "Onions" once with total amount).
+            2. Return a JSON ARRAY of strings only.
+            
+            EXAMPLE OUTPUT:
+            ["Ground Beef (3lbs)", "Brioche Buns (1 pack)", "Potatoes (5lbs)", "Frying Oil"]
+            `;
+
+            const response = await fetch('https://text.pollinations.ai/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    messages: [{ role: 'system', content: 'JSON array of strings only.' }, { role: 'user', content: prompt }],
+                    model: 'openai',
+                    seed: Math.floor(Math.random() * 10000)
+                })
+            });
+            
+            if (response.status === 429) throw new Error("Rate Limit");
+            
+            const list = extractJSON(await response.text());
+            if (Array.isArray(list) && list.length > 0) return list;
+            
+        } catch (err) {
+            console.warn(`Attempt ${attempt + 1} failed:`, err);
+        }
+    }
+    return null; // Failed after 3 attempts
+};
+
+// 3. FALLBACK PRICE ESTIMATOR (If AI fails or returns 0)
+const estimatePrice = (itemName, category) => {
+    const prices = {
+        'Meat': 8.99,
+        'Produce': 1.99,
+        'Dairy': 4.50,
+        'Pantry': 3.25,
+        'Frozen': 5.99,
+        'Other': 4.99
+    };
+    const base = prices[category] || 3.99;
+    return parseFloat((base + (Math.random() * 3 - 1.5)).toFixed(2));
+};
+
+// 4. BATCH PRODUCT MATCHER (Step 2: Smart Quantity & Price)
+const matchProductsBatchAI = async (ingredientsList) => {
+    // Helper to generate fallback data locally if AI fails
+    const generateLocalFallback = (items) => {
+        return items.map(item => ({
+            baseTerm: item,
+            productName: item,
+            price: estimatePrice(item, 'Other'),
+            category: 'Other'
+        }));
+    };
+
+    for(let attempt = 0; attempt < 2; attempt++) {
+        try {
+            await delay(2000 + (attempt * 2000)); 
+
+            const prompt = `
+            You are a Walmart Personal Shopper.
+            Map these ingredients to SPECIFIC, PURCHASEABLE Walmart items.
+            
+            INGREDIENTS:
+            ${JSON.stringify(ingredientsList)}
+
+            CRITICAL RULES:
+            1. Find the BEST MATCHING product.
+            2. PRICE: Estimate the current shelf price. 
+            3. QUANTITY: If the ingredient is small (1 tsp), buy the smallest container.
+            
+            RETURN A JSON ARRAY OF OBJECTS:
+            [
+              {
+                "baseTerm": "Salt (1 tsp)",
+                "productName": "Morton Iodized Salt, 26 oz",
+                "price": 1.64,
+                "category": "Pantry"
+              },
+              ...
+            ]
+            
+            Categories: Meat, Produce, Dairy, Pantry, Frozen, Other.
+            `;
+
+            const response = await fetch('https://text.pollinations.ai/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    messages: [{ role: 'system', content: 'JSON array only.' }, { role: 'user', content: prompt }],
+                    model: 'openai',
+                    seed: Math.floor(Math.random() * 10000)
+                })
+            });
+
+            if (response.status === 429) throw new Error("Rate Limit");
+
+            const text = await response.text();
+            const data = extractJSON(text);
+            
+            if (Array.isArray(data) && data.length > 0) return data;
+
+        } catch (e) {
+            console.warn(`Batch Match Attempt ${attempt + 1} failed:`, e);
+        }
+    }
+    
+    return generateLocalFallback(ingredientsList);
+};
+
+// 5. REAL PRODUCT IMAGE FINDER (Bing Search Proxy)
+const getRealProductImage = (productName) => {
+    if(!productName) return 'https://via.placeholder.com/100?text=No+Image';
+    const query = `Walmart ${productName} product packaging`;
+    return `https://tse2.mm.bing.net/th?q=${encodeURIComponent(query)}&w=200&h=200&c=7&rs=1&p=0`;
+};
+
+// 6. LIST BUILDER ORCHESTRATOR
+const generateGroceryListReal = async (mealConfig, onProgress) => {
+    onProgress("Analyzing recipes (Mains & Sides)...", 10);
+    
+    // UPDATED PROMPT: Explicitly separates Main and Sides so AI sees both
+    const requests = mealConfig.map(m => 
+        `${m.quantity} servings of MAIN DISH: "${m.title}". ALSO INCLUDES ${m.quantity} servings of SIDE DISHES: "${m.side}".`
+    );
+    
+    // Step 1: Breakdown
+    let rawIngredients = await breakDownRecipesAI(requests);
+    
+    // Fallback if AI fails completely
+    if (!rawIngredients || rawIngredients.length === 0) {
+        rawIngredients = [];
+        mealConfig.forEach(m => {
+            rawIngredients.push(`${m.title} Ingredients`);
+            if(m.side) rawIngredients.push(`${m.side} Ingredients`);
+        });
+    }
+
+    onProgress(`Sourcing ${rawIngredients.length} ingredients...`, 30);
+
+    // Step 2: Batch Match (Chunked to avoid limits)
+    const results = [];
+    const chunkSize = 8;
+    
+    for (let i = 0; i < rawIngredients.length; i += chunkSize) {
+        const currentBatchNum = Math.ceil((i + 1) / chunkSize);
+        const totalBatches = Math.ceil(rawIngredients.length / chunkSize);
+        
+        const percent = 30 + Math.round(((i) / rawIngredients.length) * 60);
+        onProgress(`Matching Batch ${currentBatchNum} of ${totalBatches}...`, percent);
+        
+        if (i > 0) await delay(3000);
+
+        const chunk = rawIngredients.slice(i, i + chunkSize);
+        const chunkResults = await matchProductsBatchAI(chunk);
+        results.push(...chunkResults);
+    }
+
+    onProgress("Finalizing prices...", 95);
+    
+    // Step 3: Clean & Format & Ensure Prices
+    const final = results
+        .filter(item => item && item.baseTerm) 
+        .map(item => ({
+            id: Math.random().toString(36).substr(2, 9),
+            baseTerm: item.baseTerm,
+            realName: item.productName || item.baseTerm, 
+            category: item.category || 'Other',
+            // Force a price if 0 comes back
+            price: (typeof item.price === 'number' && item.price > 0) ? item.price : estimatePrice(item.baseTerm, item.category || 'Other'),
+            purchased: false,
+            image: getRealProductImage(item.productName || item.baseTerm) 
+        }));
+    
+    onProgress("Done!", 100);
+    return final;
+};
+
+// ... (Standard AI Helpers for other tabs)
+const generateNutritionAI = async (dishName) => {
+    const prompt = `Nutrition for "${dishName}". Return JSON: { "calories": 500, "protein": "30g", "carbs": "40g", "fat": "20g" }. JSON ONLY.`;
+    try {
+        const response = await fetch('https://text.pollinations.ai/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'system', content: 'Output raw JSON only.' }, { role: 'user', content: prompt }], model: 'openai', seed: Math.floor(Math.random() * 1000) }) });
+        return extractJSON(await response.text());
+    } catch (e) { return null; }
+};
+
+const getAIText = async (main, side1, side2) => {
+    const prompt = `Rewrite: "${main}, ${side1}, ${side2}". Appetizing names only. Max 15 words.`;
+    try {
+        const response = await fetch('https://text.pollinations.ai/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'system', content: 'Output raw text only.' }, { role: 'user', content: prompt }], model: 'openai' }) });
+        return (await response.text()).replace(/["\n]/g, '').trim();
+    } catch (e) { return `${main} with ${side1}`; }
+};
+
+const findImageInLibrary = async (query) => {
+    if (!query || query.length < 3) return null;
+    const { data: dish } = await supabase.from('dishes').select('image_url').ilike('name', `%${query}%`).limit(1);
+    return dish?.[0]?.image_url || null;
+};
+
+const generateSingleImage = async (promptText) => {
+    if(!promptText) return null;
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(promptText)}?width=300&height=300&model=flux&nologo=true&seed=${Math.floor(Math.random() * 1000000)}`;
+};
+
+const generateAndUploadMealImage = async (main, side1, side2, forceNew = false) => {
+  const mainItem = (main || '').trim();
+  if (!mainItem) return null;
+  const images = { main: null, side1: null, side2: null };
+  if (!forceNew) {
+      const memoryImage = await findImageInLibrary(mainItem);
+      if (memoryImage) images.main = memoryImage;
+  }
+  if (!images.main) images.main = await generateSingleImage(`gourmet main dish, ${mainItem}, professional food photography, 4k`);
+  if (side1) images.side1 = await generateSingleImage(`gourmet side dish, ${side1}, professional food photography`);
+  if (side2) images.side2 = await generateSingleImage(`gourmet side dish, ${side2}, professional food photography`);
+  return images;
+};
+
+// ================= MAIN COMPONENT =================
 export default function AdminPage() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('builder');
   const [initialLoading, setInitialLoading] = useState(true);
-  
+
   const [dishes, setDishes] = useState([]);
   const [menus, setMenus] = useState([]);
   const [clients, setClients] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
+  const [gallery, setGallery] = useState([]);
+
+  const [editingMenuId, setEditingMenuId] = useState(null);
+  const [prefillData, setPrefillData] = useState(null);
 
   useEffect(() => {
     checkSession();
@@ -66,69 +331,86 @@ export default function AdminPage() {
   const fetchData = async (isFirstLoad = false) => {
     if (isFirstLoad) setInitialLoading(true);
     try {
-      const [dishRes, menuRes, clientRes, suggestionRes] = await Promise.all([
+      const [dishRes, menuRes, clientRes, suggestionRes, galleryRes] = await Promise.all([
         supabase.from('dishes').select('*').order('name'),
         supabase.from('menus').select('*, meals(*)').order('week_start', { ascending: false }),
         supabase.from('clients').select('*').order('name'),
-        supabase.from('suggestions').select('*').order('created_at', { ascending: false })
+        supabase.from('suggestions').select('*').order('created_at', { ascending: false }),
+        supabase.from('gallery_images').select('*').order('created_at', { ascending: false })
       ]);
 
       if (dishRes.data) setDishes(dishRes.data);
       if (menuRes.data) setMenus(menuRes.data);
       if (clientRes.data) setClients(clientRes.data);
       if (suggestionRes.data) setSuggestions(suggestionRes.data);
+      if (galleryRes.data) setGallery(galleryRes.data);
     } catch (error) {
-      console.error("Data load error", error);
+      console.error('Data load error', error);
     } finally {
       if (isFirstLoad) setInitialLoading(false);
     }
   };
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    navigate('/');
+  const handleLogout = async () => { await supabase.auth.signOut(); navigate('/'); };
+
+  const handleEditMenu = (menu) => {
+    setEditingMenuId(menu.id);
+    setPrefillData(menu);
+    setActiveTab('builder');
+    toast.info(`Editing menu for week of ${menu.week_start}`);
+  };
+
+  const handleBulkDelete = async (ids) => {
+    if (!window.confirm(`Delete ${ids.length} menus?`)) return;
+    await supabase.from('meals').delete().in('menu_id', ids);
+    await supabase.from('menus').delete().in('id', ids);
+    toast.success("Deleted");
+    fetchData();
+  };
+
+  const handleBulkStatusChange = async (ids, newStatus) => {
+    await supabase.from('menus').update({ status: newStatus }).in('id', ids);
+    toast.success("Updated");
+    fetchData();
   };
 
   const newSuggestionCount = suggestions.filter(s => s.status === 'new').length;
 
-  if (initialLoading) return <div className="min-h-screen flex items-center justify-center bg-[#fcfdfa]"><Loader2 className="animate-spin text-[#2c5f4c] w-12 h-12"/></div>;
+  if (initialLoading) return <div className="min-h-screen flex items-center justify-center bg-[#fcfdfa]"><Loader2 className="animate-spin text-[#2c5f4c] w-12 h-12" /></div>;
 
   return (
     <div className="min-h-screen bg-[#fcfdfa] text-slate-800 font-sans">
-      {/* HEADER */}
       <div className="bg-white border-b border-stone-200 sticky top-0 z-50 shadow-sm">
         <div className="max-w-7xl mx-auto px-6 py-5 flex justify-between items-center">
           <div className="flex items-center gap-5">
-            <div className="bg-[#2c5f4c] p-3 rounded-2xl shadow-lg shadow-[#2c5f4c]/20">
-              <ChefHat className="w-8 h-8 text-white" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-[#1a3c30] tracking-tight font-serif">Lorena's Kitchen</h1>
-              <p className="text-xs text-[#6b8c7e] font-bold uppercase tracking-wider">Command Center</p>
-            </div>
+            <div className="bg-[#2c5f4c] p-3 rounded-2xl shadow-lg shadow-[#2c5f4c]/20"><ChefHat className="w-8 h-8 text-white" /></div>
+            <div><h1 className="text-2xl font-bold text-[#1a3c30] tracking-tight font-serif">Lorena's Kitchen</h1><p className="text-xs text-[#6b8c7e] font-bold uppercase tracking-wider">Command Center</p></div>
           </div>
-          <button onClick={handleLogout} className="text-sm font-bold text-stone-400 hover:text-red-500 flex items-center gap-2 transition-colors">
-            <LogOut className="w-4 h-4" /> Sign Out
-          </button>
+          <button onClick={handleLogout} className="text-sm font-bold text-stone-400 hover:text-red-500 flex items-center gap-2"><LogOut className="w-4 h-4" /> Sign Out</button>
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8">
-        {/* TABS */}
-        <div className="flex gap-2 mb-10 bg-white p-2 rounded-2xl shadow-sm border border-stone-100 overflow-x-auto">
-          <TabButton active={activeTab === 'builder'} onClick={() => setActiveTab('builder')} icon={<Sparkles className="w-4 h-4" />}>Menu Builder</TabButton>
-          <TabButton active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<Search className="w-4 h-4" />}>Food Library</TabButton>
-          <TabButton active={activeTab === 'crm'} onClick={() => setActiveTab('crm')} icon={<Users className="w-4 h-4" />}>CRM</TabButton>
-          <TabButton active={activeTab === 'requests'} onClick={() => setActiveTab('requests')} icon={<MessageSquare className="w-4 h-4" />} badge={newSuggestionCount}>Requests</TabButton>
-          <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} icon={<Archive className="w-4 h-4" />}>History</TabButton>
+        <div className="flex justify-between items-center mb-6">
+          <div className="flex gap-2 bg-white p-2 rounded-2xl shadow-sm border border-stone-100 overflow-x-auto">
+            <TabButton active={activeTab === 'builder'} onClick={() => { setActiveTab('builder'); setEditingMenuId(null); setPrefillData(null); }} icon={<Sparkles className="w-4 h-4" />}>Menu Builder</TabButton>
+            <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')} icon={<Archive className="w-4 h-4" />}>History</TabButton>
+            <TabButton active={activeTab === 'gallery'} onClick={() => setActiveTab('gallery')} icon={<LayoutGrid className="w-4 h-4" />}>Gallery</TabButton>
+            <TabButton active={activeTab === 'library'} onClick={() => setActiveTab('library')} icon={<Search className="w-4 h-4" />}>Food Library</TabButton>
+            <TabButton active={activeTab === 'crm'} onClick={() => setActiveTab('crm')} icon={<Users className="w-4 h-4" />}>CRM</TabButton>
+            <TabButton active={activeTab === 'tools'} onClick={() => setActiveTab('tools')} icon={<ShoppingCart className="w-4 h-4" />}>Tools</TabButton>
+            <TabButton active={activeTab === 'suggestions'} onClick={() => setActiveTab('suggestions')} icon={<MessageSquare className="w-4 h-4" />} badge={newSuggestionCount}>Suggestions</TabButton>
+          </div>
         </div>
 
         <div className="animate-in fade-in duration-500">
-            {activeTab === 'builder' && <MenuBuilder dishes={dishes} refreshData={() => fetchData(false)} />}
-            {activeTab === 'library' && <FoodLibrary dishes={dishes} refreshData={() => fetchData(false)} />}
-            {activeTab === 'crm' && <CRM clients={clients} refreshData={() => fetchData(false)} />}
-            {activeTab === 'requests' && <Requests suggestions={suggestions} refreshData={() => fetchData(false)} />}
-            {activeTab === 'history' && <MenuHistory menus={menus} />}
+          {activeTab === 'builder' && <MenuBuilder dishes={dishes} refreshData={() => fetchData(false)} editMode={!!editingMenuId} editId={editingMenuId} initialData={prefillData} onSuccess={() => { setEditingMenuId(null); setPrefillData(null); }} />}
+          {activeTab === 'history' && <MenuHistory menus={menus} onEdit={handleEditMenu} onBulkDelete={handleBulkDelete} onBulkStatus={handleBulkStatusChange} />}
+          {activeTab === 'gallery' && <GalleryManager gallery={gallery} refreshData={() => fetchData(false)} />}
+          {activeTab === 'library' && <FoodLibrary dishes={dishes} refreshData={() => fetchData(false)} />}
+          {activeTab === 'crm' && <CRM clients={clients} refreshData={() => fetchData(false)} />}
+          {activeTab === 'tools' && <Tools menus={menus} />}
+          {activeTab === 'suggestions' && <Suggestions suggestions={suggestions} refreshData={() => fetchData(false)} />}
         </div>
       </div>
     </div>
@@ -137,366 +419,418 @@ export default function AdminPage() {
 
 function TabButton({ active, onClick, icon, children, badge }) {
   return (
-    <button
-      onClick={onClick}
-      className={`relative flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all whitespace-nowrap ${
-        active
-          ? 'bg-[#2c5f4c] text-white shadow-lg shadow-[#2c5f4c]/20 transform scale-105'
-          : 'text-stone-500 hover:bg-stone-50 hover:text-stone-700'
-      }`}
-    >
-      {icon}
-      {children}
-      {badge > 0 && (
-        <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full font-bold shadow-sm ring-2 ring-white">
-          {badge}
-        </span>
-      )}
+    <button onClick={onClick} className={`relative flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold text-sm transition-all whitespace-nowrap ${active ? 'bg-[#2c5f4c] text-white shadow-lg shadow-[#2c5f4c]/20' : 'text-stone-500 hover:bg-stone-50'}`}>
+      {icon} {children}
+      {badge > 0 && <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full font-bold shadow-sm ring-2 ring-white">{badge}</span>}
     </button>
   );
 }
 
-// --- 1. MENU BUILDER ---
-function MenuBuilder({ dishes, refreshData }) {
-  const [weekStart, setWeekStart] = useState(format(startOfWeek(new Date(), { weekStartsOn: 0 }), 'yyyy-MM-dd'));
-  const [publishing, setPublishing] = useState(false);
-  
-  const [menuSlots, setMenuSlots] = useState([
-    { main: null, side1: null, side2: null, description: '', image_seed: 123 },
-    { main: null, side1: null, side2: null, description: '', image_seed: 456 },
-    { main: null, side1: null, side2: null, description: '', image_seed: 789 }
-  ]);
+// --- TOOLS MODULE (Shopping List & Nutrition) ---
+function Tools({ menus }) {
+    const [selectedMenu, setSelectedMenu] = useState(null);
+    const [mealQuantities, setMealQuantities] = useState({});
+    
+    // Grocery State
+    const [groceryItems, setGroceryItems] = useState([]);
+    const [newItemInput, setNewItemInput] = useState('');
+    const [editingId, setEditingId] = useState(null);
+    
+    // Staples State
+    const [pantryStaples, setPantryStaples] = useState([]);
+    const [newStapleName, setNewStapleName] = useState('');
+    const [isManagingStaples, setIsManagingStaples] = useState(false);
 
-  const startDateObj = new Date(weekStart + 'T00:00:00'); 
-  const endDateObj = addDays(startDateObj, 8); 
-  const weekEnd = format(endDateObj, 'yyyy-MM-dd');
-  const displayRange = `${format(startDateObj, 'MMM dd')} - ${format(endDateObj, 'MMM dd')}`;
+    // AI Loading State
+    const [loadingGrocery, setLoadingGrocery] = useState(false);
+    const [progress, setProgress] = useState('');
+    const [progressPercent, setProgressPercent] = useState(0);
 
-  const handleDateSelect = (e) => {
-    const selected = new Date(e.target.value + 'T00:00:00');
-    const start = startOfWeek(selected, { weekStartsOn: 0 });
-    setWeekStart(format(start, 'yyyy-MM-dd'));
-  };
+    const [nutritionItem, setNutritionItem] = useState('');
+    const [nutritionData, setNutritionData] = useState(null);
+    const [loadingNutrition, setLoadingNutrition] = useState(false);
 
-  const handleRegenerateImage = (index) => {
-    const newSlots = [...menuSlots];
-    if (!newSlots[index].main) return;
-    newSlots[index].image_seed = Math.floor(Math.random() * 999999);
-    setMenuSlots(newSlots);
-    toast.success("Regenerating image...");
-  }
+    useEffect(() => {
+        // Load staples from local storage or default
+        const saved = localStorage.getItem('loranas_pantry_staples');
+        if (saved) {
+            setPantryStaples(JSON.parse(saved));
+        } else {
+            setPantryStaples(DEFAULT_STAPLES);
+        }
+    }, []);
 
-  const handleRegenerateDescription = async (index) => {
-    const newSlots = [...menuSlots];
-    if (!newSlots[index].main) return;
-    toast.promise(
-        getAIText(newSlots[index].main.name).then(text => {
-            newSlots[index].description = text;
-            setMenuSlots([...newSlots]);
-        }),
-        { loading: 'Writing...', success: 'Updated!', error: 'Failed' }
-    );
-  }
-
-  const handlePublish = async () => {
-    if (menuSlots.some(s => !s.main || !s.side1 || !s.side2)) {
-      toast.error('Please fill Main + 2 Sides for all meals');
-      return;
-    }
-    setPublishing(true);
-    try {
-      const { data: menu, error: menuErr } = await supabase
-        .from('menus')
-        .insert([{ week_start: weekStart, week_end: weekEnd, status: 'active' }])
-        .select().single();
-
-      if (menuErr) throw menuErr;
-
-      const mealsToInsert = menuSlots.map(slot => ({
-          menu_id: menu.id,
-          title: slot.main.name,
-          side: slot.side1.name,
-          description: slot.description || `Served with ${slot.side1.name} and ${slot.side2.name}`,
-          price: 15.00,
-          image_url: getAIImageUrl(`plate of ${slot.main.name}, ${slot.side1.name}, and ${slot.side2.name}`, slot.image_seed)
-      }));
-
-      const { error: mealsErr } = await supabase.from('meals').insert(mealsToInsert);
-      if (mealsErr) throw mealsErr;
-
-      toast.success(`Menu Published Successfully!`);
-      refreshData();
-      
-    } catch (err) {
-      console.error(err);
-      toast.error('Failed to publish: ' + err.message);
-    } finally {
-      setPublishing(false);
-    }
-  };
-
-  return (
-    <div className="space-y-8">
-      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 flex flex-col md:flex-row justify-between items-center gap-4">
-        <div>
-           <label className="text-xs font-bold text-stone-400 uppercase tracking-wider">Target Week</label>
-           <div className="flex items-center gap-3 mt-1">
-              <Calendar className="w-5 h-5 text-[#2c5f4c]" />
-              <input type="date" value={weekStart} onChange={handleDateSelect} className="font-serif font-bold text-xl text-stone-800 outline-none bg-transparent cursor-pointer" />
-           </div>
-           <div className="text-sm text-[#2c5f4c] font-bold mt-1 bg-[#e8f5e9] inline-block px-3 py-1 rounded-full">{displayRange}</div>
-        </div>
-        <button onClick={handlePublish} disabled={publishing} className="bg-[#2c5f4c] text-white px-8 py-4 rounded-xl font-bold shadow-lg shadow-[#2c5f4c]/20 hover:scale-105 transition-all flex items-center gap-3 disabled:opacity-50">
-            {publishing ? <Loader2 className="animate-spin" /> : <Save className="w-5 h-5" />}
-            {publishing ? 'Publishing...' : 'Publish Menu Live'}
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {menuSlots.map((slot, idx) => (
-          <div key={idx} className="bg-white rounded-3xl shadow-sm border border-stone-100 p-6 relative group hover:shadow-xl transition-all duration-300">
-             <div className="flex items-center gap-3 mb-6 border-b border-stone-100 pb-4">
-                <div className="w-10 h-10 bg-[#2c5f4c] rounded-xl flex items-center justify-center text-white font-bold shadow-md font-serif">{idx + 1}</div>
-                <div><h3 className="font-bold text-stone-800">Meal {idx + 1}</h3><p className="text-xs text-stone-400 font-bold uppercase tracking-wider">Main + 2 Sides</p></div>
-             </div>
-             <div className="space-y-5">
-                <DishSelector label="Main Dish" type="main" value={slot.main} dishes={dishes} refreshData={refreshData} onChange={(d) => {
-                        const newSlots = [...menuSlots]; newSlots[idx].main = d;
-                        if(d && !newSlots[idx].description) handleRegenerateDescription(idx);
-                        setMenuSlots(newSlots);
-                    }} />
-                <DishSelector label="Side 1" type="side" value={slot.side1} dishes={dishes} refreshData={refreshData} onChange={(d) => {
-                        const newSlots = [...menuSlots]; newSlots[idx].side1 = d; setMenuSlots(newSlots);
-                    }} />
-                <DishSelector label="Side 2" type="side" value={slot.side2} dishes={dishes} refreshData={refreshData} onChange={(d) => {
-                        const newSlots = [...menuSlots]; newSlots[idx].side2 = d; setMenuSlots(newSlots);
-                    }} />
-             </div>
-             {slot.main && slot.side1 && slot.side2 && (
-                 <div className="mt-6 pt-6 border-t border-stone-100 space-y-4">
-                    <div className="relative h-48 rounded-xl overflow-hidden bg-stone-100 border border-stone-200 group/image">
-                        <img 
-                            src={getAIImageUrl(`plate of ${slot.main.name}, ${slot.side1.name}, and ${slot.side2.name}`, slot.image_seed)}
-                            className="w-full h-full object-cover transition-opacity duration-500"
-                            alt="Preview"
-                        />
-                        <button onClick={() => handleRegenerateImage(idx)} className="absolute bottom-2 right-2 bg-white/90 backdrop-blur text-[#2c5f4c] p-2 rounded-lg shadow-sm hover:scale-110 transition-all font-bold text-xs flex items-center gap-1">
-                            <RefreshCw className="w-3 h-3" /> Redo
-                        </button>
-                    </div>
-                    <div className="relative">
-                        <label className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-1 block">Description</label>
-                        <textarea value={slot.description} onChange={(e) => {
-                                const newSlots = [...menuSlots]; newSlots[idx].description = e.target.value; setMenuSlots(newSlots);
-                            }} className="w-full text-sm p-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:ring-2 ring-[#2c5f4c]/20 min-h-[80px]" />
-                        <button onClick={() => handleRegenerateDescription(idx)} className="absolute top-8 right-2 p-1.5 text-stone-400 hover:text-[#2c5f4c] rounded-lg transition-all"><Wand2 className="w-4 h-4" /></button>
-                    </div>
-                 </div>
-             )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// --- 2. FOOD LIBRARY ---
-function FoodLibrary({ dishes, refreshData }) {
-  const [search, setSearch] = useState('');
-  const handleDelete = async (id) => {
-      if(!window.confirm("Delete this dish?")) return;
-      await supabase.from('dishes').delete().eq('id', id);
-      toast.success("Dish deleted");
-      refreshData();
-  }
-  const filtered = dishes.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
-
-  return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 relative">
-          <Search className="absolute left-9 top-9 w-5 h-5 text-stone-400" />
-          <input type="text" placeholder="Search library..." value={search} onChange={e => setSearch(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-stone-50 border border-stone-200 rounded-xl outline-none focus:border-[#2c5f4c]" />
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filtered.map(dish => (
-          <div key={dish.id} className="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden hover:shadow-lg transition-all group">
-            <div className="relative h-48 bg-stone-100">
-              <img src={dish.image_url} alt={dish.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" />
-              <span className={`absolute top-3 right-3 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${dish.type === 'main' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>{dish.type}</span>
-            </div>
-            <div className="p-5 flex justify-between items-start">
-              <div><h3 className="font-bold text-stone-800 text-lg mb-1">{dish.name}</h3><p className="text-stone-500 text-xs line-clamp-2">{dish.description}</p></div>
-              <button onClick={() => handleDelete(dish.id)} className="text-stone-300 hover:text-red-500 transition-colors p-2 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// --- 3. CRM ---
-function CRM({ clients, refreshData }) {
-  const [showModal, setShowModal] = useState(false);
-  const [formData, setFormData] = useState({ id: null, name: '', email: '', phone: '', address: '', notes: '' });
-  const handleOpenAdd = () => { setFormData({ id: null, name: '', email: '', phone: '', address: '', notes: '' }); setShowModal(true); }
-  const handleOpenEdit = (client) => { setFormData(client); setShowModal(true); }
-  const handleDelete = async (id) => {
-    if(!window.confirm("Delete this client?")) return;
-    await supabase.from('clients').delete().eq('id', id);
-    refreshData();
-  }
-  const handleSave = async () => {
-      const { id, ...data } = formData;
-      if (id) await supabase.from('clients').update(data).eq('id', id);
-      else await supabase.from('clients').insert([data]);
-      setShowModal(false); refreshData();
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 flex justify-between items-center">
-         <h2 className="font-bold text-xl text-stone-800 font-serif">Customer Database</h2>
-         <button onClick={handleOpenAdd} className="bg-[#2c5f4c] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 hover:bg-[#234b3c]"><UserPlus className="w-4 h-4" /> Add Client</button>
-      </div>
-      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 overflow-hidden">
-        <table className="w-full">
-            <thead className="bg-stone-50 border-b border-stone-100">
-                <tr><th className="px-6 py-4 text-left text-xs font-bold text-stone-500 uppercase tracking-wider">Name</th><th className="px-6 py-4 text-left text-xs font-bold text-stone-500 uppercase tracking-wider">Contact</th><th className="px-6 py-4 text-left text-xs font-bold text-stone-500 uppercase tracking-wider">Actions</th></tr>
-            </thead>
-            <tbody className="divide-y divide-stone-100">
-                {clients.map(c => (
-                    <tr key={c.id} className="hover:bg-stone-50 transition-colors">
-                        <td className="px-6 py-4 font-bold text-stone-700">{c.name}</td>
-                        <td className="px-6 py-4"><div className="text-sm text-stone-600 font-medium">{c.email}</div><div className="text-xs text-stone-400">{c.phone}</div></td>
-                        <td className="px-6 py-4 flex gap-2">
-                            <button onClick={() => handleOpenEdit(c)} className="p-2 text-stone-400 hover:text-[#2c5f4c] hover:bg-green-50 rounded-lg"><Edit2 className="w-4 h-4" /></button>
-                            <button onClick={() => handleDelete(c.id)} className="p-2 text-stone-400 hover:text-red-500 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
-                        </td>
-                    </tr>
-                ))}
-            </tbody>
-        </table>
-      </div>
-      {showModal && (
-         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setShowModal(false)}>
-            <div className="bg-white p-8 rounded-2xl w-full max-w-md space-y-4 shadow-2xl" onClick={e => e.stopPropagation()}>
-                <h3 className="font-bold text-xl font-serif text-[#2c5f4c]">{formData.id ? 'Edit Client' : 'New Client'}</h3>
-                <input placeholder="Name" className="w-full border p-3 rounded-xl bg-stone-50" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
-                <input placeholder="Email" className="w-full border p-3 rounded-xl bg-stone-50" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} />
-                <input placeholder="Phone" className="w-full border p-3 rounded-xl bg-stone-50" value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
-                <textarea placeholder="Notes" className="w-full border p-3 rounded-xl bg-stone-50 min-h-[100px]" value={formData.notes} onChange={e => setFormData({...formData, notes: e.target.value})} />
-                <button onClick={handleSave} className="w-full bg-[#2c5f4c] text-white py-3 rounded-xl font-bold hover:bg-[#234b3c]">Save Changes</button>
-            </div>
-         </div>
-      )}
-    </div>
-  )
-}
-
-// --- 4. REQUESTS ---
-function Requests({ suggestions, refreshData }) {
-    const handleStatus = async (id, status) => { await supabase.from('suggestions').update({ status }).eq('id', id); refreshData(); }
-    const handleDelete = async (id) => { if(!window.confirm("Delete?")) return; await supabase.from('suggestions').delete().eq('id', id); refreshData(); }
-
-    return (
-        <div className="space-y-4">
-            {suggestions.map(s => (
-                <div key={s.id} className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm flex justify-between items-start hover:shadow-md transition-all">
-                    <div>
-                        <div className="flex gap-2 mb-2">
-                            <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full ${s.status === 'new' ? 'bg-green-100 text-green-700' : 'bg-stone-100 text-stone-500'}`}>{s.status}</span>
-                            <span className="text-xs text-stone-400 font-medium">{s.user_email || 'Anonymous'}</span>
-                        </div>
-                        <p className="font-medium text-stone-800">{s.message || s.content}</p>
-                    </div>
-                    <div className="flex gap-2">
-                      {s.status === 'new' && <button onClick={() => handleStatus(s.id, 'reviewed')} className="bg-stone-50 p-2 rounded-lg hover:bg-green-100 hover:text-green-600"><Check className="w-4 h-4" /></button>}
-                      <button onClick={() => handleDelete(s.id)} className="bg-stone-50 p-2 rounded-lg hover:bg-red-50 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
-                    </div>
-                </div>
-            ))}
-        </div>
-    )
-}
-
-// --- 5. HISTORY ---
-function MenuHistory({ menus }) {
-    return (
-        <div className="grid gap-4">
-            {menus.map(m => (
-                <div key={m.id} className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm hover:shadow-md transition-all">
-                    <div className="flex justify-between items-center mb-4">
-                        <h3 className="font-bold text-[#2c5f4c] font-serif">Week of {m.week_start}</h3>
-                        <span className="bg-green-100 text-green-700 text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-wider">Published</span>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        {m.meals && m.meals.map((meal, i) => (
-                            <div key={i} className="bg-stone-50 p-3 rounded-xl text-sm border border-stone-100">
-                                <span className="font-bold block text-stone-700 mb-1">{meal.title}</span>
-                                <span className="text-stone-500 text-xs line-clamp-2">{meal.description}</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            ))}
-        </div>
-    )
-}
-
-// --- DISH SELECTOR ---
-function DishSelector({ label, type, value, dishes, refreshData, onChange }) {
-    const [query, setQuery] = useState('');
-    const [isOpen, setIsOpen] = useState(false);
-    const [creating, setCreating] = useState(false);
-    const filtered = dishes.filter(d => d.type === type && d.name.toLowerCase().includes(query.toLowerCase()));
-  
-    const handleCreate = async () => {
-      if(!query) return;
-      setCreating(true);
-      const seed = Math.floor(Math.random() * 1000000);
-      const prompt = type === 'main' ? `${query} food` : `side dish ${query}`;
-      const imgUrl = getAIImageUrl(prompt, seed);
-      const { data, error } = await supabase.from('dishes').insert([{ name: query, type, description: `Freshly prepared ${query}`, image_url: imgUrl, ai_seed: seed }]).select().single();
-      if(!error && data) { refreshData(); onChange(data); setQuery(''); setIsOpen(false); toast.success(`Added ${query}`); } 
-      else { toast.error("Failed"); }
-      setCreating(false);
+    const saveStaples = (newStaples) => {
+        setPantryStaples(newStaples);
+        localStorage.setItem('loranas_pantry_staples', JSON.stringify(newStaples));
     };
-  
-    if (value) {
-      return (
-        <div>
-          <label className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-1 block">{label}</label>
-          <div className="flex items-center gap-3 bg-stone-50 border border-stone-200 p-2 rounded-xl group relative">
-             <img src={value.image_url} className="w-10 h-10 rounded-lg object-cover bg-stone-200" alt="" />
-             <div className="flex-1"><p className="font-bold text-sm text-stone-700">{value.name}</p></div>
-             <button onClick={() => onChange(null)} className="p-2 hover:text-red-500 transition-colors"><X className="w-4 h-4" /></button>
-          </div>
-        </div>
-      );
-    }
-  
+
+    const handleAddCustomStaple = () => {
+        if(!newStapleName.trim()) return;
+        const newItem = { name: newStapleName, icon: "🥘" }; 
+        saveStaples([...pantryStaples, newItem]);
+        setNewStapleName('');
+        toast.success("Staple added!");
+    };
+
+    const handleDeleteStaple = (name) => {
+        const filtered = pantryStaples.filter(s => s.name !== name);
+        saveStaples(filtered);
+    };
+
+    useEffect(() => {
+        if (selectedMenu) {
+            const initialQ = {};
+            selectedMenu.meals.forEach(m => { initialQ[m.id] = 4; });
+            setMealQuantities(initialQ);
+            setGroceryItems([]); 
+        }
+    }, [selectedMenu]);
+
+    const handleQuantityChange = (id, val) => {
+        setMealQuantities(prev => ({...prev, [id]: parseInt(val) || 0}));
+    };
+
+    // 1. GENERATE LIST
+    const handleGenerateGrocery = async () => {
+        if(!selectedMenu) return;
+        setLoadingGrocery(true);
+        setGroceryItems([]);
+        setProgress('Starting AI Agent...');
+        setProgressPercent(5);
+        
+        try {
+            const mealConfig = selectedMenu.meals.map(m => ({
+                title: m.title,
+                side: m.side,
+                quantity: mealQuantities[m.id] || 0
+            })).filter(m => m.quantity > 0);
+
+            if(mealConfig.length === 0) {
+                toast.error("Please add at least 1 serving");
+                setLoadingGrocery(false);
+                return;
+            }
+
+            const list = await generateGroceryListReal(mealConfig, (msg, pct) => {
+                setProgress(msg);
+                if(pct) setProgressPercent(pct);
+            });
+            
+            if (!list || list.length === 0) {
+                toast.error("Could not generate ingredients.");
+            } else {
+                setGroceryItems(list);
+            }
+        } catch (e) {
+            toast.error("Failed to generate list");
+            console.error(e);
+        } finally {
+            setLoadingGrocery(false);
+            setProgress('');
+            setProgressPercent(0);
+        }
+    };
+
+    // 2. MANUAL ADD
+    const handleAddItem = async () => {
+        if (!newItemInput.trim()) return;
+        
+        if (editingId) {
+            setGroceryItems(prev => prev.map(item => 
+                item.id === editingId ? { ...item, realName: newItemInput, baseTerm: newItemInput } : item
+            ));
+            setEditingId(null);
+            setNewItemInput('');
+            toast.success("Item updated");
+        } else {
+            const tempId = Date.now().toString();
+            const inputName = newItemInput;
+            setNewItemInput('');
+            toast.info(`Adding "${inputName}"...`);
+
+            const newItem = {
+                id: tempId,
+                baseTerm: inputName,
+                realName: inputName,
+                category: 'Other',
+                price: estimatePrice(inputName, 'Other'),
+                purchased: false,
+                image: getRealProductImage(inputName)
+            };
+            setGroceryItems(prev => [newItem, ...prev]);
+        }
+    };
+
+    const handleQuickAdd = (itemName) => {
+        const tempId = Date.now().toString() + Math.random();
+        toast.info(`Adding ${itemName}...`);
+        
+        const newItem = {
+            id: tempId,
+            baseTerm: itemName,
+            realName: itemName, 
+            category: 'Pantry',
+            price: estimatePrice(itemName, 'Pantry'),
+            purchased: false,
+            image: getRealProductImage(itemName)
+        };
+        
+        setGroceryItems(prev => [newItem, ...prev]);
+    };
+
+    const handleEditStart = (item) => {
+        setNewItemInput(item.baseTerm);
+        setEditingId(item.id);
+        document.getElementById('grocery-input')?.focus();
+    };
+
+    const handleDeleteItem = (id) => {
+        setGroceryItems(prev => prev.filter(i => i.id !== id));
+    };
+
+    const togglePurchased = (id) => {
+        setGroceryItems(prev => prev.map(item => 
+            item.id === id ? { ...item, purchased: !item.purchased } : item
+        ));
+    };
+
+    const handleGenerateNutrition = async () => {
+        if(!nutritionItem) return;
+        setLoadingNutrition(true);
+        const data = await generateNutritionAI(nutritionItem);
+        setNutritionData(data);
+        setLoadingNutrition(false);
+    };
+
+    const categories = ["Meat", "Produce", "Dairy", "Pantry", "Frozen", "Other"];
+    const activeItems = groceryItems.filter(i => !i.purchased);
+    const purchasedItems = groceryItems.filter(i => i.purchased);
+    const estimatedTotal = activeItems.reduce((sum, item) => sum + (item.price || 0), 0);
+
     return (
-      <div className="relative">
-        <label className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-1 block">{label}</label>
-        <div className="relative">
-          <Search className="absolute left-3 top-3 w-4 h-4 text-stone-400" />
-          <input type="text" value={query} onChange={e => { setQuery(e.target.value); setIsOpen(true); }} onFocus={() => setIsOpen(true)} placeholder={`Search or add ${type}...`} className="w-full pl-10 pr-4 py-2.5 border border-stone-200 rounded-xl outline-none focus:border-[#2c5f4c] text-sm font-medium bg-white" />
-        </div>
-        {isOpen && (
-          <>
-            <div className="absolute z-20 w-full mt-2 bg-white rounded-xl shadow-xl border border-stone-100 max-h-60 overflow-y-auto">
-              {filtered.map(dish => (
-                <div key={dish.id} onClick={() => { onChange(dish); setIsOpen(false); setQuery(''); }} className="p-3 hover:bg-stone-50 cursor-pointer flex items-center gap-3 border-b border-stone-50 last:border-0">
-                  <img src={dish.image_url} className="w-8 h-8 rounded object-cover bg-stone-200" alt="" />
-                  <p className="font-semibold text-stone-700 text-sm">{dish.name}</p>
+        <div className="space-y-8 max-w-5xl mx-auto">
+            {/* TOP: NUTRITION */}
+            <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm">
+                <h3 className="text-xl font-bold text-[#1a3c30] mb-4 flex items-center gap-2"><Activity className="w-5 h-5" /> Quick Nutrition Check</h3>
+                <div className="flex gap-2 mb-6">
+                    <input placeholder="e.g. Turkey Tacos" className="flex-1 p-2 border rounded-xl text-sm" value={nutritionItem} onChange={(e) => setNutritionItem(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleGenerateNutrition()}/>
+                    <button onClick={handleGenerateNutrition} disabled={!nutritionItem || loadingNutrition} className="bg-[#2c5f4c] text-white px-4 py-2 rounded-xl font-bold disabled:opacity-50">
+                        {loadingNutrition ? <Loader2 className="w-4 h-4 animate-spin"/> : "Analyze"}
+                    </button>
                 </div>
-              ))}
-              {query && <button onClick={handleCreate} disabled={creating} className="w-full p-3 bg-[#2c5f4c]/5 text-[#2c5f4c] font-bold text-xs hover:bg-[#2c5f4c]/10 transition-colors flex items-center justify-center gap-2">{creating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />} Create "{query}"</button>}
+                {nutritionData && (
+                    <div className="border-2 border-black p-4 max-w-sm mx-auto bg-white font-sans animate-in zoom-in-95">
+                        <h4 className="text-3xl font-black border-b-8 border-black pb-1">Nutrition Facts</h4>
+                        <div className="py-2 border-b-4 border-black flex justify-between items-end"><div><p className="font-bold text-sm">Amount Per Serving</p><p className="text-3xl font-black">Calories</p></div><p className="text-4xl font-black">{nutritionData.calories}</p></div>
+                        <div className="text-sm py-1 border-b border-stone-300 flex justify-between"><span className="font-bold">Total Fat</span><span>{nutritionData.fat}</span></div>
+                        <div className="text-sm py-1 border-b border-stone-300 flex justify-between"><span className="font-bold">Total Carbohydrate</span><span>{nutritionData.carbs}</span></div>
+                        <div className="text-sm py-1 border-b-4 border-black flex justify-between"><span className="font-bold">Protein</span><span>{nutritionData.protein}</span></div>
+                    </div>
+                )}
             </div>
-            <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
-          </>
-        )}
-      </div>
+
+            {/* BOTTOM: SHOPPING LIST */}
+            <div className="bg-white p-6 rounded-2xl border border-stone-200 shadow-sm">
+                <h3 className="text-xl font-bold text-[#1a3c30] mb-4 flex items-center gap-2">
+                    <ShoppingCart className="w-5 h-5" /> Shopping List Manager
+                </h3>
+                
+                <div className="mb-6">
+                    {/* QUICK ADD ESSENTIALS */}
+                    <div className="mb-8">
+                        <div className="flex justify-between items-center mb-3">
+                            <label className="text-xs font-bold text-stone-400 uppercase tracking-wider">Quick Add Pantry Staples</label>
+                            <button onClick={() => setIsManagingStaples(!isManagingStaples)} className="text-xs font-bold text-[#2c5f4c] hover:underline flex items-center gap-1">
+                                <Settings className="w-3 h-3"/> {isManagingStaples ? "Done Editing" : "Edit Staples"}
+                            </button>
+                        </div>
+                        
+                        <div className="flex flex-wrap gap-2">
+                            {pantryStaples.map((item) => (
+                                <div key={item.name} className="relative group">
+                                    <button
+                                        onClick={() => !isManagingStaples && handleQuickAdd(item.name)}
+                                        className={`flex items-center gap-2 px-3 py-2 bg-stone-50 border border-stone-100 rounded-xl transition-all text-sm font-medium text-stone-600 ${isManagingStaples ? 'opacity-80 cursor-default' : 'hover:bg-white hover:shadow-md hover:border-[#2c5f4c] active:scale-95'}`}
+                                    >
+                                        <span>{item.icon}</span>
+                                        <span>{item.name}</span>
+                                        {!isManagingStaples && <Plus className="w-3 h-3 opacity-50" />}
+                                    </button>
+                                    {isManagingStaples && (
+                                        <button onClick={() => handleDeleteStaple(item.name)} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-4 h-4 flex items-center justify-center shadow-sm hover:scale-110">
+                                            <X className="w-3 h-3" />
+                                        </button>
+                                    )}
+                                </div>
+                            ))}
+                            
+                            {isManagingStaples && (
+                                <div className="flex items-center gap-1 animate-in fade-in slide-in-from-left-2">
+                                    <input 
+                                        value={newStapleName}
+                                        onChange={(e) => setNewStapleName(e.target.value)}
+                                        placeholder="New Item..."
+                                        className="w-24 p-2 text-xs border rounded-lg"
+                                        onKeyDown={(e) => e.key === 'Enter' && handleAddCustomStaple()}
+                                    />
+                                    <button onClick={handleAddCustomStaple} className="bg-[#2c5f4c] text-white p-2 rounded-lg">
+                                        <Plus className="w-3 h-3" />
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="h-px bg-stone-100 w-full mb-8"></div>
+
+                    {/* PROGRESS DASHBOARD */}
+                    {loadingGrocery && (
+                        <div className="bg-stone-50 border border-stone-200 rounded-2xl p-8 text-center shadow-inner animate-in fade-in zoom-in-95 mb-8">
+                            <div className="flex items-center justify-center gap-3 mb-4 text-[#2c5f4c]">
+                                <ScanLine className="w-8 h-8 animate-pulse" />
+                                <Cpu className="w-8 h-8 animate-bounce" />
+                                <Layers className="w-8 h-8 animate-pulse" />
+                            </div>
+                            <h3 className="text-2xl font-black text-[#1a3c30] mb-2">{progressPercent}% Complete</h3>
+                            <p className="text-stone-500 font-bold text-sm mb-6 animate-pulse">{progress}</p>
+                            
+                            <div className="w-full max-w-md mx-auto bg-stone-200 rounded-full h-4 mb-4 overflow-hidden border border-stone-300">
+                                 <div 
+                                    className="bg-gradient-to-r from-[#2c5f4c] to-emerald-500 h-full transition-all duration-700 ease-out rounded-full shadow-[0_0_10px_rgba(44,95,76,0.5)]" 
+                                    style={{ width: `${progressPercent}%` }}
+                                 ></div>
+                            </div>
+                            <p className="text-stone-400 text-xs font-bold uppercase tracking-wider">
+                                Finding lowest prices... (Attempting auto-retry if busy)
+                            </p>
+                        </div>
+                    )}
+
+                    {!loadingGrocery && groceryItems.length === 0 && (
+                        <>
+                            <label className="text-xs font-bold text-stone-400 uppercase mb-2 block">1. Select Menu Source</label>
+                            <select 
+                                className="w-full p-3 border rounded-xl text-sm mb-4"
+                                onChange={(e) => setSelectedMenu(menus.find(m => m.id === parseInt(e.target.value)))}
+                            >
+                                <option value="">Select a Menu...</option>
+                                {menus.map(m => (
+                                    <option key={m.id} value={m.id}>
+                                        Week of {format(parseISO(m.week_start), 'MMM d')} ({m.meals.length} meals)
+                                    </option>
+                                ))}
+                            </select>
+
+                            {selectedMenu && (
+                                <div className="bg-stone-50 p-4 rounded-xl border border-stone-100 mb-4 animate-in fade-in">
+                                    <div className="space-y-3">
+                                        {selectedMenu.meals.map(meal => (
+                                            <div key={meal.id} className="flex justify-between items-center gap-4">
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="text-sm font-bold text-[#1a3c30] truncate">{meal.title}</div>
+                                                    <div className="text-xs text-stone-500 truncate" title={meal.side}>+ {meal.side}</div>
+                                                </div>
+                                                <input 
+                                                    type="number" min="0" value={mealQuantities[meal.id] || 0}
+                                                    onChange={(e) => handleQuantityChange(meal.id, e.target.value)}
+                                                    className="w-16 p-1 border rounded text-center font-bold text-sm"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            <button 
+                                onClick={handleGenerateGrocery} 
+                                disabled={!selectedMenu || loadingGrocery}
+                                className="w-full bg-[#2c5f4c] text-white px-4 py-3 rounded-xl font-bold disabled:opacity-50 flex justify-center items-center gap-2 hover:bg-[#1f4436] transition-colors shadow-lg shadow-[#2c5f4c]/20"
+                            >
+                                <Sparkles className="w-4 h-4"/> Generate New List
+                            </button>
+                        </>
+                    )}
+
+                    {!loadingGrocery && groceryItems.length > 0 && (
+                        <div className="animate-in fade-in slide-in-from-bottom-2">
+                            <div className="flex gap-2 mb-4 border-b pb-4 border-stone-100">
+                                <input 
+                                    id="grocery-input" type="text" value={newItemInput}
+                                    onChange={(e) => setNewItemInput(e.target.value)}
+                                    placeholder={editingId ? "Update base item..." : "Add item..."}
+                                    className="flex-1 p-2 border rounded-lg text-sm"
+                                    onKeyDown={(e) => e.key === 'Enter' && handleAddItem()}
+                                />
+                                <button onClick={handleAddItem} className={`px-4 py-2 rounded-lg font-bold text-white text-sm ${editingId ? 'bg-blue-600' : 'bg-[#2c5f4c]'}`}>
+                                    {editingId ? <Save className="w-4 h-4"/> : <Plus className="w-4 h-4"/>}
+                                </button>
+                                {editingId && <button onClick={() => { setEditingId(null); setNewItemInput(''); }} className="text-stone-400 hover:text-red-500"><X className="w-5 h-5"/></button>}
+                            </div>
+
+                            <div className="space-y-6">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-sm font-bold text-stone-400">To Buy ({activeItems.length})</span>
+                                    <span className="text-xl font-bold text-green-600">${estimatedTotal.toFixed(2)}</span>
+                                </div>
+
+                                {categories.map(cat => {
+                                    const items = activeItems.filter(i => (i.category || 'Other') === cat);
+                                    if(items.length === 0) return null;
+                                    return (
+                                        <div key={cat}>
+                                            <h4 className="font-bold text-[#1a3c30] text-xs uppercase mb-2 tracking-wider">{cat}</h4>
+                                            <ul className="space-y-2">
+                                                {items.map((item) => (
+                                                    <li key={item.id} className="flex items-center justify-between p-3 bg-white border border-stone-100 rounded-xl shadow-sm group hover:shadow-md transition-all">
+                                                        <div className="flex items-center gap-4">
+                                                            <input type="checkbox" checked={item.purchased} onChange={() => togglePurchased(item.id)} className="w-5 h-5 accent-[#2c5f4c] cursor-pointer rounded"/>
+                                                            <div className="w-12 h-12 bg-stone-100 rounded-lg overflow-hidden shrink-0 border border-stone-200">
+                                                                <img src={item.image} alt="" className="w-full h-full object-contain p-1" />
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex-1 px-4 min-w-0">
+                                                            <p className="text-[10px] text-stone-400 uppercase font-bold tracking-wider mb-0.5">Looking for: {item.baseTerm}</p>
+                                                            <h3 className="text-sm font-bold text-stone-800 leading-tight truncate" title={item.realName}>{item.realName}</h3>
+                                                        </div>
+                                                        <div className="text-right flex items-center gap-3">
+                                                            <span className="text-lg font-bold text-green-700 block">${item.price?.toFixed(2)}</span>
+                                                            <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                <button onClick={() => handleEditStart(item)} className="p-1 text-blue-400 hover:bg-blue-50 rounded"><Edit2 className="w-3 h-3"/></button>
+                                                                <button onClick={() => handleDeleteItem(item.id)} className="p-1 text-red-400 hover:bg-red-50 rounded"><Trash2 className="w-3 h-3"/></button>
+                                                            </div>
+                                                        </div>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+
+                            {purchasedItems.length > 0 && (
+                                <div className="mt-8 pt-6 border-t border-stone-200">
+                                    <h4 className="font-bold text-stone-400 text-xs uppercase mb-3 flex items-center gap-2"><CheckCircle className="w-4 h-4"/> Purchased ({purchasedItems.length})</h4>
+                                    <ul className="space-y-1 opacity-60">
+                                        {purchasedItems.map((item) => (
+                                            <li key={item.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-stone-50 transition-colors">
+                                                <input type="checkbox" checked={item.purchased} onChange={() => togglePurchased(item.id)} className="w-5 h-5 accent-stone-400 cursor-pointer rounded"/>
+                                                <span className="flex-1 text-sm text-stone-500 line-through truncate">{item.realName}</span>
+                                                <button onClick={() => handleDeleteItem(item.id)} className="p-1 text-stone-300 hover:text-red-400"><Trash2 className="w-3 h-3"/></button>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                            
+                            <div className="flex gap-2 mt-6">
+                                <button onClick={() => setGroceryItems([])} className="flex-1 py-3 text-red-400 font-bold text-sm bg-red-50 hover:bg-red-100 rounded-xl">Clear All</button>
+                                <button onClick={() => window.print()} className="flex-1 py-3 text-[#1a3c30] font-bold text-sm bg-stone-100 hover:bg-stone-200 rounded-xl flex items-center justify-center gap-2"><Printer className="w-4 h-4" /> Print</button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
     );
 }
