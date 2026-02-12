@@ -4,7 +4,6 @@ import { Link, useLocation } from 'react-router-dom';
 
 export default function Layout({ children }) {
   const location = useLocation();
-  const isAdmin = location.pathname.includes('/admin') || location.pathname.includes('/login');
 
   return (
     <div className="min-h-screen flex flex-col font-sans text-[#1d1d1f] antialiased selection:bg-[#1b4d3e] selection:text-white">
@@ -29,30 +28,36 @@ export default function Layout({ children }) {
         }
       `}</style>
 
-      {/* NEW: Navigation Bar */}
+      {/* Navigation Bar */}
       <nav className="bg-white/50 backdrop-blur-sm border-b border-white/20 sticky top-0 z-50">
-        <div className="max-w-[1000px] mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-            {/* Replace the text <Link ...>Lorena's Kitchen</Link> with this: */}
-<Link to="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
-  <img 
-    src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/6944e802ebbb976a9a2791a1/e01294408_logo_optimized_1000.png" 
-    alt="Lorena's Home Cooked Meals" 
-    className="h-12 w-auto object-contain" // Adjust h-12 to make it bigger/smaller
-  />
-</Link>
+        {/* CHANGED: Increased height from h-16 to h-28 to fit the big logo */}
+        <div className="max-w-[1000px] mx-auto px-4 sm:px-6 lg:px-8 h-28 flex items-center justify-between">
+            {/* Logo Link */}
+            <Link to="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+              <img 
+                src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/6944e802ebbb976a9a2791a1/e01294408_logo_optimized_1000.png" 
+                alt="Lorena's Home Cooked Meals" 
+                // CHANGED: Increased from h-12 to h-24 (Twice as big)
+                className="h-24 w-auto object-contain" 
+              />
+            </Link>
             
-            <div className="flex gap-4">
-              <Link to="/" className="text-sm font-medium hover:text-[#1b4d3e] transition-colors">
+            {/* Menu Links */}
+            <div className="flex gap-6 items-center">
+              <Link to="/" className={`text-sm font-medium transition-colors ${location.pathname === '/' ? 'text-[#1b4d3e] font-bold' : 'hover:text-[#1b4d3e]'}`}>
                 Menu
               </Link>
-              {/* This ensures you go to the LOCAL login, not the old website */}
-              <Link to="/login" className="text-sm font-medium hover:text-[#1b4d3e] transition-colors">
-                Admin Login
+              <Link to="/gallery" className={`text-sm font-medium transition-colors ${location.pathname === '/gallery' ? 'text-[#1b4d3e] font-bold' : 'hover:text-[#1b4d3e]'}`}>
+                Gallery
+              </Link>
+              <Link to="/login" className="text-sm font-medium hover:text-[#1b4d3e] transition-colors text-gray-500">
+                Admin
               </Link>
             </div>
         </div>
       </nav>
 
+      {/* Main Content Area */}
       <div className="flex-1 flex flex-col max-w-[1000px] mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
         {children}
       </div>

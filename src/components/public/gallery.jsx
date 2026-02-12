@@ -1,94 +1,146 @@
-import React, { useState, useEffect } from 'react'
-import { supabase } from '../../supabaseClient'
-import { motion } from 'framer-motion'
-import { Loader2 } from 'lucide-react'
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../../supabaseClient';
+import { Loader2, Image as ImageIcon, ArrowLeft, Utensils } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 export default function Gallery() {
-  const [photos, setPhotos] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [images, setImages] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchGallery()
-  }, [])
+    fetchGallery();
+  }, []);
 
   const fetchGallery = async () => {
     try {
-      const { data, error } = await supabase
-        .from('menus')
+      console.log("Loading gallery...");
+
+      // 1. Fetch from 'gallery_images' (Manual Uploads)
+      const { data: galleryData, error: galleryError } = await supabase
+        .from('gallery_images')
         .select('*')
-        .order('created_at', { ascending: false })
-        .limit(50)
+        .order('created_at', { ascending: false });
 
-      if (error) throw error
+      if (galleryError) console.error("Gallery Error:", galleryError);
 
-      const allMeals = data.flatMap((menu) => {
-        if (!menu.meals || !Array.isArray(menu.meals)) return []
-        return menu.meals.map((meal) => ({
-          ...meal,
-          menuDate: menu.week_start,
-        }))
-      })
+      // 2. Fetch from 'meals' (Your Menu Items)
+      // We check for both 'image_main' (new 3-image style) and 'image_url' (old style)
+      const { data: mealData, error: mealError } = await supabase
+        .from('meals')
+        .select('image_main, image_url, title')
+        .or('image_main.neq.null,image_url.neq.null');
 
-      const validMeals = allMeals.filter((m) => m.title && m.title.length > 2)
-      setPhotos(validMeals)
+      if (mealError) console.error("Meal Error:", mealError);
+
+      // 3. Combine Them
+      let combined = [];
+
+      // Process Gallery Uploads
+      if (galleryData && galleryData.length > 0) {
+        const manualImages = galleryData.map(item => ({
+            id: `gal-${item.id}`,
+            url: item.image_url,
+            title: item.title,
+            source: 'Gallery'
+        }));
+        combined = [...combined, ...manualImages];
+      }
+
+      // Process Menu Meals
+      if (mealData && mealData.length > 0) {
+         const mealImages = mealData.map((m, idx) => ({
+             id: `meal-${idx}`,
+             url: m.image_main || m.image_url, // Prefer new Main Image
+             title: m.title,
+             source: 'Menu'
+         })).filter(img => img.url); // Safety check to remove empties
+         
+         combined = [...combined, ...mealImages];
+      }
+
+      console.log("Total Images Found:", combined.length);
+      setImages(combined);
+
     } catch (error) {
-      console.error('Gallery Error:', error)
+      console.error('Critical Error:', error);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-[50vh] flex items-center justify-center bg-[#fcfdfa]">
+        <Loader2 className="w-10 h-10 animate-spin text-[#1b4d3e]" />
+      </div>
+    );
   }
 
   return (
-    <div className="pb-20 px-4">
-      <div className="text-center py-10">
-        <h1 className="text-4xl font-fresh text-[#1b4d3e] mb-2">The Vault</h1>
-        <p className="text-gray-500">A collection of our past culinary creations</p>
-      </div>
+    <div className="min-h-screen bg-[#fcfdfa] pt-10 pb-20 px-4 font-sans text-slate-800">
+      <div className="container mx-auto max-w-6xl">
+        
+        {/* Header */}
+        <div className="text-center mb-16">
+          <h1 className="text-4xl md:text-5xl font-serif font-bold text-[#1b4d3e] mb-4">
+            The Gallery
+          </h1>
+          <p className="text-stone-500 max-w-2xl mx-auto text-lg">
+            A visual collection of our fresh, homemade meals. 
+          </p>
+        </div>
 
-      {loading ? (
-        <div className="flex justify-center py-20">
-          <Loader2 className="animate-spin text-gray-300" />
+        {/* Grid */}
+        {images.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 animate-in fade-in duration-700">
+            {images.map((img) => (
+              <div 
+                key={img.id} 
+                className="group relative aspect-square rounded-2xl overflow-hidden bg-white shadow-sm border border-stone-100 hover:shadow-xl transition-all duration-300"
+              >
+                <img 
+                  src={img.url} 
+                  alt={img.title || 'Food gallery image'} 
+                  className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
+                />
+                
+                {/* Hover Overlay */}
+                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-end p-6">
+                  <span className="text-xs font-bold text-white/80 uppercase tracking-wider mb-1">
+                    {img.source === 'Menu' ? <Utensils className="w-3 h-3 inline mr-1"/> : <ImageIcon className="w-3 h-3 inline mr-1"/>}
+                    {img.source}
+                  </span>
+                  <p className="text-white font-medium text-lg drop-shadow-md transform translate-y-4 group-hover:translate-y-0 transition-transform duration-300 line-clamp-2">
+                    {img.title}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          // Empty State
+          <div className="flex flex-col items-center justify-center py-20 text-stone-400 bg-white rounded-3xl border-2 border-dashed border-stone-200">
+            <div className="bg-stone-50 p-6 rounded-full mb-4">
+              <ImageIcon className="w-12 h-12 text-stone-300" />
+            </div>
+            <p className="text-lg font-medium text-stone-500">No images found in Library or Menu.</p>
+            <Link to="/" className="mt-6 text-[#1b4d3e] font-bold hover:underline flex items-center gap-2">
+              <ArrowLeft className="w-4 h-4" /> Back Home
+            </Link>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="mt-20 text-center border-t border-stone-200 pt-10">
+            <p className="text-stone-500 mb-6">See something you like?</p>
+            <Link 
+                to="/"
+                className="inline-block bg-[#1b4d3e] text-white px-8 py-3 rounded-full font-bold hover:bg-[#153a2f] transition-colors shadow-lg shadow-[#1b4d3e]/20"
+            >
+                Order from Weekly Menu
+            </Link>
         </div>
-      ) : (
-        <div className="columns-1 md:columns-2 lg:columns-3 gap-6 space-y-6">
-          {photos.map((meal, idx) => (
-            <GalleryItem key={idx} meal={meal} index={idx} />
-          ))}
-        </div>
-      )}
+      </div>
     </div>
-  )
-}
-
-function GalleryItem({ meal, index }) {
-  const [loaded, setLoaded] = useState(false)
-
-  const seed = meal.image_seed || Math.floor(Math.random() * 1000) + index
-  const fullPrompt = `${meal.title} ${meal.side ? 'with ' + meal.side : ''}`
-  const imageUrl = `https://image.pollinations.ai/prompt/gourmet food photography, ${encodeURIComponent(
-    fullPrompt
-  )}?seed=${seed}&width=600&height=800&nologo=true&model=flux`
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true }}
-      className="break-inside-avoid bg-white rounded-2xl overflow-hidden shadow-md border border-gray-100 mb-6 group"
-    >
-      <div className="relative bg-gray-100 min-h-[200px]">
-        <img
-          src={imageUrl}
-          alt={meal.title}
-          className={`w-full h-auto object-cover transition-all duration-700 ${
-            loaded ? 'opacity-100' : 'opacity-0'
-          } group-hover:scale-105`}
-          onLoad={() => setLoaded(true)}
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">
-          <p className="text-white font-bold">{meal.title}</p>
-        </div>
-      </div>
-    </motion.div>
-  )
+  );
 }

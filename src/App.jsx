@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { supabase } from './supabaseClient';
+import { supabase } from './supabaseClient'; 
 import Layout from './Layout';
 import Home from './components/public/Home';
 import AdminPage from './components/admin/AdminPage';
 import AdminLogin from './components/admin/AdminLogin';
+import CreatePassword from './components/admin/CreatePassword'; 
 import Gallery from './components/public/Gallery';
 import { Loader2 } from 'lucide-react';
 
@@ -13,14 +14,18 @@ function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // 1. check for existing session
+    // 1. Initial session check
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoading(false);
     });
 
-    // 2. Listen for the "Magic Link" event
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    // 2. UPDATED: Listen for ALL auth events, especially PASSWORD_RECOVERY
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        // This forces the hash to the reset page so the router picks it up
+        window.location.hash = '#/reset-password';
+      }
       setSession(session);
       setLoading(false);
     });
@@ -28,22 +33,17 @@ function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // THE BOUNCER LOGIC:
-  // If the URL contains a Supabase token, show a loader and WAIT.
-  // This prevents the Router from "eating" the token before Supabase reads it.
-  if (window.location.hash.includes('access_token')) {
+  // THE BOUNCER: Updated to handle recovery types
+  if (window.location.hash.includes('access_token') || window.location.hash.includes('type=recovery')) {
     return (
-       <div className="min-h-screen flex flex-col items-center justify-center bg-[#f8f9fa]">
+       <div className="min-h-screen flex flex-col items-center justify-center bg-[#f4f5f0]">
           <Loader2 className="w-10 h-10 animate-spin text-[#1b4d3e] mb-4" />
-          <p className="font-script text-2xl text-[#1b4d3e]">Verifying your kitchen pass...</p>
+          <p className="text-[#1b4d3e] font-medium italic">Opening the kitchen doors...</p>
        </div>
     );
   }
 
-  // If we are just loading normally
-  if (loading) {
-     return null; // or a spinner
-  }
+  if (loading) return null;
 
   return (
     <Router>
@@ -52,12 +52,13 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/login" element={session ? <Navigate to="/admin" /> : <AdminLogin />} />
           
-          {/* Protected Route: If no session, go to login */}
+          {/* IMPORTANT: Added the route for the password setup page */}
+          <Route path="/reset-password" element={<CreatePassword />} />
+          
           <Route 
             path="/admin" 
             element={session ? <AdminPage /> : <Navigate to="/login" />} 
           />
-          
           <Route path="/gallery" element={<Gallery />} />
         </Routes>
       </Layout>

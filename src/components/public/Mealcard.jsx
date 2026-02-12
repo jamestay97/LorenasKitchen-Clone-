@@ -2,66 +2,70 @@ import React, { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Loader2 } from 'lucide-react'
 
-export default function MealCard({ meal, index }) {
+// Default index to 0 if not provided
+export default function MealCard({ meal, index = 0 }) {
   const [imageLoaded, setImageLoaded] = useState(false)
 
-  const seed = meal.image_seed || Math.floor(Math.random() * 1000) + index
-  const mainPrompt = meal.title || 'gourmet meal'
+  // Fallback if seed isn't set
+  const seed = meal.image_seed || Math.floor(Math.random() * 1000)
+  
+  // Clean up side dishes string
   const sidesText = [meal.side, meal.side2].filter(Boolean).join(', ')
-  const fullPrompt = sidesText ? `${mainPrompt} with ${sidesText}` : mainPrompt
+  const description = meal.description || "Freshly prepared homemade meal."
 
-  const imageUrl = `https://image.pollinations.ai/prompt/gourmet food dish, ${encodeURIComponent(
-    fullPrompt
-  )}?seed=${seed}&width=800&height=600&nologo=true&model=flux`
+  // Use the saved URL if available, otherwise generate one
+  // Note: Using seed in Unsplash URL ensures consistency
+  const displayImage = meal.image_url || `https://source.unsplash.com/800x600/?food,dinner&sig=${seed}`
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, delay: index * 0.1 }}
-      className="bg-white rounded-[20px] shadow-[0_10px_30px_-10px_rgba(0,0,0,0.12)] overflow-hidden flex flex-col h-full hover:-translate-y-1 transition-transform duration-300 border border-black/5"
+      className="bg-white rounded-[24px] shadow-xl shadow-stone-200/50 overflow-hidden flex flex-col h-full hover:-translate-y-2 transition-transform duration-300 border border-stone-100 group"
     >
-      <div className="relative h-56 w-full bg-gray-100 overflow-hidden">
+      <div className="relative h-64 w-full bg-stone-100 overflow-hidden">
         {!imageLoaded && (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-400">
-            <Loader2 className="w-6 h-6 animate-spin" />
+          <div className="absolute inset-0 flex items-center justify-center text-stone-300">
+            <Loader2 className="w-8 h-8 animate-spin" />
           </div>
         )}
         <img
-          src={imageUrl}
+          src={displayImage}
           alt={meal.title}
-          className={`w-full h-full object-cover transition-opacity duration-700 ${
+          className={`w-full h-full object-cover transition-transform duration-700 group-hover:scale-105 ${
             imageLoaded ? 'opacity-100' : 'opacity-0'
           }`}
           onLoad={() => setImageLoaded(true)}
         />
-        <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold text-[#1b4d3e] shadow-sm">
-          Day {index + 1}
+        <div className="absolute top-4 left-4 bg-white/90 backdrop-blur-md px-4 py-1.5 rounded-full text-xs font-bold text-[#1b4d3e] shadow-sm tracking-wide uppercase">
+          Chef's Selection
         </div>
       </div>
 
-      <div className="p-6 flex flex-col flex-grow">
-        <h3 className="font-fresh text-3xl text-[#1b4d3e] leading-none mb-2">
-          {meal.title}
-        </h3>
-
-        <div className="space-y-1 mb-6 flex-grow">
-          {meal.side && (
-            <div className="flex items-center gap-2 text-gray-600 text-sm">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#82a898]" />
-              {meal.side}
-            </div>
-          )}
-          {meal.side2 && (
-            <div className="flex items-center gap-2 text-gray-600 text-sm">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#82a898]" />
-              {meal.side2}
-            </div>
-          )}
+      <div className="p-8 flex flex-col flex-grow">
+        <div className="flex justify-between items-start mb-3">
+            <h3 className="font-serif text-2xl font-bold text-[#1b4d3e] leading-tight">
+            {meal.title}
+            </h3>
+            <span className="bg-[#e6f0eb] text-[#1b4d3e] px-3 py-1 rounded-lg text-sm font-bold">
+                ${meal.price}
+            </span>
         </div>
 
-        <div className="pt-4 border-t border-gray-100 flex items-center justify-between">
-          <div className="text-xs text-gray-400 font-medium">Chef's Special</div>
+        <p className="text-stone-500 mb-6 leading-relaxed line-clamp-3 flex-grow">
+            {description}
+        </p>
+
+        <div className="pt-6 border-t border-stone-100">
+          <p className="text-xs font-bold text-stone-400 uppercase tracking-wider mb-2">Served With</p>
+          <div className="flex flex-wrap gap-2">
+             {sidesText ? (
+                 <span className="text-stone-700 font-medium">{sidesText}</span>
+             ) : (
+                 <span className="text-stone-400 italic">No sides specified</span>
+             )}
+          </div>
         </div>
       </div>
     </motion.div>
