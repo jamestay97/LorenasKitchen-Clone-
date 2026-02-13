@@ -286,7 +286,21 @@ const findImageInLibrary = async (query) => {
 
 const generateSingleImage = async (promptText) => {
     if(!promptText) return null;
-    return `https://image.pollinations.ai/prompt/${encodeURIComponent(promptText)}?width=300&height=300&model=flux&nologo=true&seed=${Math.floor(Math.random() * 1000000)}`;
+    try {
+        const { data, error } = await supabase.functions.invoke('pollinations-image', {
+            body: { 
+                prompt: promptText,
+                width: 1024,
+                height: 768
+            }
+        });
+        if (error) throw error;
+        return data.publicUrl; // This returns the URL from your Supabase Storage
+    } catch (err) {
+        console.error("Image Gen Error:", err);
+        // Fallback to direct URL if the edge function fails
+        return `https://image.pollinations.ai/prompt/${encodeURIComponent(promptText)}?width=300&height=300&model=flux&nologo=true`;
+    }
 };
 
 const generateAndUploadMealImage = async (main, side1, side2, forceNew = false) => {
