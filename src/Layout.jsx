@@ -53,7 +53,7 @@ export default function Layout({ children }) {
         </div>
       </nav>
 
-      <div className="flex-1 flex flex-col max-w-[1000px] mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
+      <div className={`flex-1 flex flex-col w-full ${!isAdmin ? '' : 'max-w-[1000px] mx-auto px-4 sm:px-6 lg:px-8 py-8'}`}>
         {children}
       </div>
 
