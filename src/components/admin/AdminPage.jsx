@@ -15,6 +15,7 @@ import MenuEditor from './MenuEditor';
 import MenuHistory from './MenuHistory';
 import FoodLibrary from './FoodLibrary';
 import FeedbackTab from './FeedbackTab';
+import SuggestionsTab from './SuggestionsTab';
 import GalleryTab from './GalleryTab';
 import CRMTab from './CRMTab';
 
@@ -49,20 +50,20 @@ export default function AdminPage() {
     if (isFirstLoad) setInitialLoading(true);
     try {
       const [dishRes, menuRes, clientRes, suggestionRes, feedbackRes, galleryRes] = await Promise.all([
-        supabase.from('dishes').select('*').order('name'),
-        supabase.from('menus').select('*, meals(*)').order('week_start', { ascending: false }),
-        supabase.from('clients').select('*').order('name'),
-        supabase.from('suggestions').select('*').order('created_at', { ascending: false }),
+        supabase.from('dishes').select('*').order('name').then((r) => r).catch(() => ({ data: [] })),
+        supabase.from('menus').select('*, meals(*)').order('week_start', { ascending: false }).then((r) => r).catch(() => ({ data: [] })),
+        supabase.from('clients').select('*').order('name').then((r) => r).catch(() => ({ data: [] })),
+        supabase.from('suggestions').select('*').order('created_at', { ascending: false }).then((r) => r).catch(() => ({ data: [] })),
         supabase.from('feedback').select('*').order('created_at', { ascending: false }).then((r) => r).catch(() => ({ data: [] })),
-        supabase.from('gallery_images').select('*').order('created_at', { ascending: false })
+        supabase.from('gallery_images').select('*').order('created_at', { ascending: false }).then((r) => r).catch(() => ({ data: [] })),
       ]);
 
-      if (dishRes.data) setDishes(dishRes.data);
-      if (menuRes.data) setMenus(menuRes.data);
-      if (clientRes.data) setClients(clientRes.data);
-      if (suggestionRes.data) setSuggestions(suggestionRes.data);
+      setDishes(dishRes?.data ?? []);
+      setMenus(menuRes?.data ?? []);
+      setClients(clientRes?.data ?? []);
+      setSuggestions(suggestionRes?.data ?? []);
       setFeedback(feedbackRes?.data ?? []);
-      if (galleryRes.data) setGallery(galleryRes.data);
+      setGallery(galleryRes?.data ?? []);
     } catch (error) {
       console.error('Data load error', error);
       toast.error("Error loading data");
@@ -72,6 +73,11 @@ export default function AdminPage() {
   };
 
   const handleLogout = async () => { await supabase.auth.signOut(); navigate('/'); };
+
+  const mealsLookup = React.useMemo(() => {
+    const list = (menus || []).flatMap((m) => m.meals || []).filter((m) => m?.id != null);
+    return Object.fromEntries(list.map((m) => [m.id, m.title || m.name || 'Unknown']));
+  }, [menus]);
 
   const handleDeleteMenu = async (menu) => {
     if (!window.confirm(`Delete menu for ${menu.week_start} – ${menu.week_end}? This cannot be undone.`)) return;
@@ -95,17 +101,17 @@ export default function AdminPage() {
     <div className="min-h-screen bg-[#fcfdfa] text-slate-800 font-sans">
       {/* HEADER */}
       <div className="bg-white border-b border-stone-200 sticky top-0 z-50 shadow-sm">
-        <div className="max-w-screen-2xl mx-auto px-8 py-5 flex justify-between items-center">
+        <div className="max-w-[1600px] w-full mx-auto px-6 sm:px-8 py-5 flex justify-between items-center">
           <div className="flex items-center gap-5">
             <div className="bg-[#2c5f4c] p-3 rounded-2xl shadow-lg shadow-[#2c5f4c]/20"><ChefHat className="w-8 h-8 text-white" /></div>
             <div><h1 className="text-2xl font-bold text-[#1a3c30] tracking-tight font-serif">Lorena's Kitchen</h1><p className="text-xs text-[#6b8c7e] font-bold uppercase tracking-wider">Command Center</p></div>
           </div>
-          <button onClick={handleLogout} className="text-sm font-bold text-stone-400 hover:text-red-500 flex items-center gap-2"><LogOut className="w-4 h-4" /> Sign Out</button>
+          <button onClick={handleLogout} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-stone-600 hover:text-red-600 hover:bg-red-50 border border-stone-200 hover:border-red-200 transition-colors" title="Sign out"><LogOut className="w-4 h-4" /> Logout</button>
         </div>
       </div>
 
       {/* MAIN CONTENT */}
-      <div className="max-w-screen-2xl mx-auto px-8 py-8">
+      <div className="max-w-[1600px] w-full mx-auto px-6 sm:px-8 py-8">
         {/* TABS */}
         <div className="flex justify-between items-center mb-6">
           <div className="flex gap-2 bg-white p-2 rounded-2xl shadow-sm border border-stone-100 overflow-x-auto">
@@ -148,8 +154,9 @@ export default function AdminPage() {
             />
           )}
           {activeTab === 'gallery' && <GalleryTab gallery={gallery} onRefresh={() => fetchData(false)} />}
-          {activeTab === 'library' && <FoodLibrary dishes={dishes} />}
-          {activeTab === 'feedback' && <FeedbackTab feedbackList={feedback} onRefresh={() => fetchData(false)} />}
+          {activeTab === 'library' && <FoodLibrary dishes={dishes} onRefresh={() => fetchData(false)} />}
+          {activeTab === 'suggestions' && <SuggestionsTab suggestions={suggestions} onRefresh={() => fetchData(false)} />}
+          {activeTab === 'feedback' && <FeedbackTab feedbackList={feedback} mealsLookup={mealsLookup} onRefresh={() => fetchData(false)} />}
           {activeTab === 'crm' && <CRMTab clients={clients} onRefresh={() => fetchData(false)} />}
         </div>
       </div>

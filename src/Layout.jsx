@@ -31,13 +31,13 @@ export default function Layout({ children }) {
 
       {/* NEW: Navigation Bar */}
       <nav className="bg-white/50 backdrop-blur-sm border-b border-white/20 sticky top-0 z-50">
-        <div className="max-w-[1000px] mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between w-full">
             {/* Replace the text <Link ...>Lorena's Kitchen</Link> with this: */}
 <Link to="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
   <img 
     src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/6944e802ebbb976a9a2791a1/e01294408_logo_optimized_1000.png" 
     alt="Lorena's Home Cooked Meals" 
-    className="h-12 w-auto object-contain" // Adjust h-12 to make it bigger/smaller
+    className="h-20 w-auto object-contain"
   />
 </Link>
             
@@ -53,7 +53,7 @@ export default function Layout({ children }) {
         </div>
       </nav>
 
-      <div className={`flex-1 flex flex-col w-full ${!isAdmin ? '' : 'max-w-[1000px] mx-auto px-4 sm:px-6 lg:px-8 py-8'}`}>
+      <div className={`flex-1 flex flex-col w-full ${!isAdmin ? '' : 'max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full'}`}>
         {children}
       </div>
 

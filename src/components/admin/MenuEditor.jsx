@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../../supabaseClient';
 import { Button, Input } from '../ui/UiKit';
 import {
@@ -17,7 +17,6 @@ import {
   ImagePlus,
   FileText,
   X,
-  CheckCircle2,
   BookOpen,
   MoreVertical,
 } from 'lucide-react';
@@ -25,6 +24,41 @@ import { toast } from 'sonner';
 
 const BENTO_IMAGE_PROMPT = (name) =>
   `professional food photography, ${name}, single dish on white plate, restaurant quality, 4k, appetizing`;
+
+/** Sum nutrition from main + side1 + side2 dishes when all three exist in recipeBook with nutrition. */
+function summedNutrition(meal, recipeBook) {
+  // Parse a nutrition value that could be a number (450) or string ("35g") into a number
+  const parseNutrVal = (v) => {
+    if (typeof v === 'number' && !Number.isNaN(v)) return v;
+    if (typeof v === 'string') {
+      const n = parseFloat(v);
+      return Number.isNaN(n) ? 0 : n;
+    }
+    return 0;
+  };
+  // Format back: calories stay as number, others get "g" suffix
+  const fmtG = (v) => v > 0 ? `${Math.round(v)}g` : '—';
+
+  if (!recipeBook?.length) return meal.nutrition ?? null;
+  const byName = (name) => recipeBook.find((r) => (r.name || '').toLowerCase() === (name || '').trim().toLowerCase());
+  const mainD = byName(meal.title);
+  const side1D = byName(meal.side);
+  const side2D = byName(meal.side2);
+  const n = (d) => (d?.nutrition && typeof d.nutrition === 'object' ? d.nutrition : null);
+  const dishes = [n(mainD), n(side1D), n(side2D)].filter(Boolean);
+  // If we found at least 2 of the 3 dishes in the recipe book, sum their nutrition
+  if (dishes.length >= 2) {
+    const sum = (key) => dishes.reduce((acc, d) => acc + parseNutrVal(d[key]), 0);
+    return {
+      calories: Math.round(sum('calories')),
+      protein: fmtG(sum('protein')),
+      carbs: fmtG(sum('carbs')),
+      fat: fmtG(sum('fat')),
+      sugar: fmtG(sum('sugar')),
+    };
+  }
+  return meal.nutrition ?? null;
+}
 
 /** Map DB meal row (image_main, image_side1, image_side2) to editor state (main_img, side1_img, side2_img) */
 function mealRowToEditor(row) {
@@ -73,9 +107,9 @@ export default function MenuEditor({
   const [loading, setLoading] = useState(false);
   const [recipeBook, setRecipeBook] = useState([]);
   const [openLib, setOpenLib] = useState(null);
-  const [showDuplicateModal, setShowDuplicateModal] = useState(null);
   const [galleryPickerFor, setGalleryPickerFor] = useState(null);
   const [openActionMenu, setOpenActionMenu] = useState(null);
+  const closeDropdownTimeoutRef = useRef(null);
 
   const [meals, setMeals] = useState([
     {
@@ -164,6 +198,10 @@ export default function MenuEditor({
     const updated = [...meals];
     updated[index][field] = value;
     setMeals(updated);
+    // Open the recipe book dropdown as user types (search-as-you-type)
+    if (['title', 'side', 'side2'].includes(field) && value.trim()) {
+      setOpenLib({ index, field });
+    }
   };
 
   const generateImage = async (promptText) => {
@@ -187,6 +225,14 @@ export default function MenuEditor({
     );
     if (match) {
       applyFromLibrary(index, part, match);
+      // After applying from library, check if all 3 are filled and auto-generate description/nutrition
+      const m = { ...meals[index] };
+      if (part === 'main') m.title = match.name;
+      else if (part === 'side1') m.side = match.name;
+      else m.side2 = match.name;
+      if (m.title?.trim() && m.side?.trim() && m.side2?.trim() && !m.description) {
+        autoGenerateText(index, m);
+      }
       return;
     }
 
@@ -200,18 +246,20 @@ export default function MenuEditor({
       updated[index][imgField] = url || updated[index][imgField];
       setMeals([...updated]);
 
-      if (field === 'title' && updated[index].title && (updated[index].side || updated[index].side2)) {
+      // Auto-generate description & nutrition whenever all 3 items are filled
+      const m = updated[index];
+      if (m.title?.trim() && (m.side?.trim() || m.side2?.trim())) {
         const { data: textData } = await supabase.functions.invoke('generate-text', {
           body: {
-            main: updated[index].title,
-            side1: updated[index].side || '',
-            side2: updated[index].side2 || '',
+            main: m.title,
+            side1: m.side || '',
+            side2: m.side2 || '',
           },
         });
         if (textData && !textData.error) {
           updated[index].description = textData.description ?? updated[index].description;
           updated[index].nutrition = textData.nutrition ?? updated[index].nutrition;
-          updated[index].ingredients = textData.ingredients ?? updated[index].ingredients;
+          updated[index].ingredients = Array.isArray(textData.ingredients) ? textData.ingredients : (updated[index].ingredients ?? []);
           setMeals([...updated]);
         }
       }
@@ -219,9 +267,56 @@ export default function MenuEditor({
       console.error('AI generation error:', err);
       toast.error('AI generation failed');
     } finally {
-      const final = [...meals];
-      final[index].isGenerating = false;
-      setMeals(final);
+      setMeals((prev) => {
+        const next = [...prev];
+        if (next[index]) next[index] = { ...next[index], isGenerating: false };
+        return next;
+      });
+    }
+  };
+
+  // Helper: auto-generate description/nutrition for a meal after library items are applied
+  const autoGenerateText = async (index, mealSnapshot) => {
+    setMeals((prev) => {
+      const next = [...prev];
+      if (next[index]) next[index] = { ...next[index], isGenerating: true };
+      return next;
+    });
+    try {
+      const { data: textData } = await supabase.functions.invoke('generate-text', {
+        body: {
+          main: mealSnapshot.title,
+          side1: mealSnapshot.side || '',
+          side2: mealSnapshot.side2 || '',
+        },
+      });
+      if (textData && !textData.error) {
+        setMeals((prev) => {
+          const next = [...prev];
+          if (next[index]) {
+            next[index] = {
+              ...next[index],
+              description: textData.description ?? next[index].description,
+              nutrition: textData.nutrition ?? next[index].nutrition,
+              ingredients: Array.isArray(textData.ingredients) ? textData.ingredients : (next[index].ingredients ?? []),
+              isGenerating: false,
+            };
+          }
+          return next;
+        });
+      } else {
+        setMeals((prev) => {
+          const next = [...prev];
+          if (next[index]) next[index] = { ...next[index], isGenerating: false };
+          return next;
+        });
+      }
+    } catch {
+      setMeals((prev) => {
+        const next = [...prev];
+        if (next[index]) next[index] = { ...next[index], isGenerating: false };
+        return next;
+      });
     }
   };
 
@@ -300,6 +395,12 @@ export default function MenuEditor({
     setMeals(updated);
     setOpenLib(null);
     toast.success(`Loaded "${dish.name}"`);
+
+    // Auto-generate description + nutrition when main + at least one side are filled
+    const m = updated[index];
+    if (m.title?.trim() && (m.side?.trim() || m.side2?.trim()) && !m.description?.trim()) {
+      autoGenerateText(index, m);
+    }
   };
 
   const setImageFromGallery = (index, slot, imageUrl) => {
@@ -311,22 +412,7 @@ export default function MenuEditor({
     toast.success('Image set from gallery');
   };
 
-  const checkDuplicates = () => {
-    const toCheck = [];
-    meals.forEach((meal) => {
-      if (meal.title?.trim()) toCheck.push({ name: meal.title.trim(), type: 'main' });
-      if (meal.side?.trim()) toCheck.push({ name: meal.side.trim(), type: 'side' });
-      if (meal.side2?.trim()) toCheck.push({ name: meal.side2.trim(), type: 'side' });
-    });
-    const duplicates = toCheck.filter((item) =>
-      recipeBook.some((r) => (r.name || '').toLowerCase() === item.name.toLowerCase())
-    );
-    if (duplicates.length > 0) {
-      setShowDuplicateModal({ duplicates, proceed: () => { setShowDuplicateModal(null); doSave(); } });
-      return;
-    }
-    doSave();
-  };
+  // Auto-skip duplicates: only save new dishes, never prompt
 
   const doSave = async () => {
     setLoading(true);
@@ -335,7 +421,9 @@ export default function MenuEditor({
       const weekEnd = format(addDays(parseISO(weekStart), 6), 'yyyy-MM-dd');
       const mealsToSave = meals.map((m) => ({ ...m, isGenerating: false }));
 
-      // 1) Backup components to dishes (schema: name, type, image_url, description only)
+      // 1) Backup components to dishes (schema: name, type, image_url, description only). Duplicate detection: only save new.
+      let newCount = 0;
+      let skipCount = 0;
       for (const meal of mealsToSave) {
         if (!meal.title) continue;
         const components = [
@@ -355,6 +443,9 @@ export default function MenuEditor({
               image_url: item.img || null,
               description: item.desc || null,
             });
+            newCount++;
+          } else {
+            skipCount++;
           }
         }
       }
@@ -378,12 +469,19 @@ export default function MenuEditor({
       await supabase.from('meals').delete().eq('menu_id', menuId);
       for (const meal of mealsToSave) {
         if (!meal.title) continue;
-        const row = mealToRow(meal, menuId);
+        const nutritionToSave = (summedNutrition(meal, recipeBook) || meal.nutrition) ?? null;
+        const row = mealToRow({ ...meal, nutrition: nutritionToSave }, menuId);
         const { error: mealErr } = await supabase.from('meals').insert(row);
         if (mealErr) throw mealErr;
       }
 
-      toast.success('Menu saved. Recipe book updated.');
+      if (skipCount > 0 && newCount === 0) {
+        toast.success('Menu saved. All dishes already in recipe book; no duplicates added.');
+      } else if (skipCount > 0) {
+        toast.success(`Menu saved. ${newCount} new dish(es) added to recipe book; ${skipCount} already existed and were skipped.`);
+      } else {
+        toast.success('Menu saved. Recipe book updated.');
+      }
       refreshData?.();
       onSuccess?.();
     } catch (err) {
@@ -400,28 +498,31 @@ export default function MenuEditor({
       toast.error('Add at least one main dish');
       return;
     }
-    checkDuplicates();
+    doSave();
   };
 
   const getGalleryUrl = (item) => item?.url || item?.image_url || item?.src || '';
 
   return (
-    <div className="space-y-8 px-8 py-8 max-w-[1600px] mx-auto min-h-screen bg-transparent">
+    <div className="space-y-8 px-4 sm:px-6 lg:px-8 py-8 w-full max-w-[1800px] mx-auto min-h-screen bg-transparent">
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-center bg-white p-8 rounded-3xl shadow-xl border border-stone-100 gap-6">
         <div>
           <h2 className="text-3xl font-bold text-[#1a3c30] tracking-tight flex items-center gap-2">
             <Zap className="text-[#2c5f4c]" /> Menu Builder
           </h2>
-          <p className="text-sm text-stone-500 mt-1">1 main + 2 sides per bento • AI images & nutrition</p>
+          <p className="text-sm text-stone-500 mt-1">1 main + 2 sides per meal • AI images & nutrition</p>
           <div className="flex items-center gap-3 mt-4 bg-stone-50 px-4 py-2.5 rounded-xl border border-stone-100">
-            <span className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Week (Mon–Sun)</span>
+            <span className="text-xs font-semibold text-stone-500 uppercase tracking-wider">Week (Mon – Sun)</span>
             <input
               type="date"
-              value={dateStr}
+              value={weekMonday(dateStr)}
               onChange={handleDateChange}
               className="bg-transparent text-sm font-semibold border-none focus:ring-0 cursor-pointer text-[#1a3c30]"
             />
+            <span className="text-sm text-stone-600">
+              {format(parseISO(weekMonday(dateStr)), 'EEEE, MMM d')} – {format(addDays(parseISO(weekMonday(dateStr)), 6), 'EEEE, MMM d')}
+            </span>
           </div>
         </div>
         <Button
@@ -441,16 +542,18 @@ export default function MenuEditor({
             className="bg-white rounded-3xl shadow-xl border border-stone-100 overflow-visible flex flex-col relative group min-w-0"
           >
             {/* Bento visual */}
-            <div className="h-64 bg-stone-900 p-3 grid grid-cols-3 gap-3 relative">
+            <div className="h-64 bg-stone-900 p-3 grid grid-cols-3 gap-3 relative overflow-visible">
               {/* Main */}
-              <div className="col-span-2 bg-stone-800 rounded-2xl overflow-hidden relative">
-                {meal.main_img ? (
-                  <img src={meal.main_img} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <div className="h-full flex items-center justify-center text-stone-600">
-                    <ImageIcon className="w-10 h-10" />
-                  </div>
-                )}
+              <div className="col-span-2 bg-stone-800 rounded-2xl relative overflow-visible">
+                <div className="absolute inset-0 rounded-2xl overflow-hidden">
+                  {meal.main_img ? (
+                    <img src={meal.main_img} alt="" className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-stone-600">
+                      <ImageIcon className="w-10 h-10" />
+                    </div>
+                  )}
+                </div>
                 <SlotActions
                   slot="main"
                   index={index}
@@ -466,14 +569,16 @@ export default function MenuEditor({
                   { key: 'side1', img: meal.side1_img },
                   { key: 'side2', img: meal.side2_img },
                 ].map(({ key, img }) => (
-                  <div key={key} className="flex-1 bg-stone-800 rounded-xl overflow-hidden relative">
-                    {img ? (
-                      <img src={img} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="h-full flex items-center justify-center text-stone-600">
-                        <ImageIcon className="w-6 h-6" />
-                      </div>
-                    )}
+                  <div key={key} className="flex-1 bg-stone-800 rounded-xl relative overflow-visible">
+                    <div className="absolute inset-0 rounded-xl overflow-hidden">
+                      {img ? (
+                        <img src={img} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-stone-600">
+                          <ImageIcon className="w-6 h-6" />
+                        </div>
+                      )}
+                    </div>
                     <SlotActions
                       slot={key}
                       index={index}
@@ -504,9 +609,16 @@ export default function MenuEditor({
                     placeholder="e.g. Garlic Butter Salmon"
                     value={meal.title}
                     onChange={(e) => handleMealChange(index, 'title', e.target.value)}
-                    onFocus={() => setOpenLib({ index, field: 'title' })}
+                    onFocus={() => {
+                      if (closeDropdownTimeoutRef.current) {
+                        clearTimeout(closeDropdownTimeoutRef.current);
+                        closeDropdownTimeoutRef.current = null;
+                      }
+                      setOpenLib({ index, field: 'title' });
+                    }}
                     onBlur={() => {
-                      setTimeout(() => setOpenLib(null), 200);
+                      if (closeDropdownTimeoutRef.current) clearTimeout(closeDropdownTimeoutRef.current);
+                      closeDropdownTimeoutRef.current = setTimeout(() => setOpenLib(null), 200);
                       triggerAI(index, 'title', meal.title);
                     }}
                     className="font-semibold border-stone-200 h-11 rounded-xl"
@@ -528,9 +640,16 @@ export default function MenuEditor({
                       placeholder="Side 1"
                       value={meal.side}
                       onChange={(e) => handleMealChange(index, 'side', e.target.value)}
-                      onFocus={() => setOpenLib({ index, field: 'side' })}
+                      onFocus={() => {
+                        if (closeDropdownTimeoutRef.current) {
+                          clearTimeout(closeDropdownTimeoutRef.current);
+                          closeDropdownTimeoutRef.current = null;
+                        }
+                        setOpenLib({ index, field: 'side' });
+                      }}
                       onBlur={() => {
-                        setTimeout(() => setOpenLib(null), 200);
+                        if (closeDropdownTimeoutRef.current) clearTimeout(closeDropdownTimeoutRef.current);
+                        closeDropdownTimeoutRef.current = setTimeout(() => setOpenLib(null), 200);
                         triggerAI(index, 'side', meal.side);
                       }}
                       className="text-sm border-stone-200 h-10 rounded-lg"
@@ -551,9 +670,16 @@ export default function MenuEditor({
                       placeholder="Side 2"
                       value={meal.side2}
                       onChange={(e) => handleMealChange(index, 'side2', e.target.value)}
-                      onFocus={() => setOpenLib({ index, field: 'side2' })}
+                      onFocus={() => {
+                        if (closeDropdownTimeoutRef.current) {
+                          clearTimeout(closeDropdownTimeoutRef.current);
+                          closeDropdownTimeoutRef.current = null;
+                        }
+                        setOpenLib({ index, field: 'side2' });
+                      }}
                       onBlur={() => {
-                        setTimeout(() => setOpenLib(null), 200);
+                        if (closeDropdownTimeoutRef.current) clearTimeout(closeDropdownTimeoutRef.current);
+                        closeDropdownTimeoutRef.current = setTimeout(() => setOpenLib(null), 200);
                         triggerAI(index, 'side2', meal.side2);
                       }}
                       className="text-sm border-stone-200 h-10 rounded-lg"
@@ -572,54 +698,48 @@ export default function MenuEditor({
               </div>
 
               <div className="pt-3 border-t border-stone-100 space-y-3">
-                <label className="text-xs font-semibold text-stone-500 uppercase tracking-wider block">Description</label>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <label className="text-xs font-semibold text-stone-500 uppercase tracking-wider block">Description</label>
+                  <Button
+                    type="button"
+                    onClick={() => handleRegenerateDescription(index)}
+                    disabled={!meal.title?.trim() || meal.isGenerating}
+                    className="text-xs rounded-lg px-3 py-1.5 bg-stone-100 hover:bg-stone-200 text-stone-700 font-semibold flex items-center gap-1.5"
+                  >
+                    <FileText className="w-3.5 h-3.5" /> Generate with AI
+                  </Button>
+                </div>
                 <textarea
                   value={meal.description || ''}
                   onChange={(e) => handleMealChange(index, 'description', e.target.value)}
                   className="w-full text-sm border border-stone-200 rounded-xl p-3 h-20 resize-none focus:ring-2 focus:ring-[#2c5f4c]/20 focus:border-[#2c5f4c]"
                   placeholder="AI-generated or edit here…"
                 />
-                <div className="grid grid-cols-4 gap-3">
+                <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">Nutrition preview</p>
+                {(() => {
+                  const displayNutr = summedNutrition(meal, recipeBook);
+                  return (
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                   {[
-                    { l: 'Cal', v: meal.nutrition?.calories, c: 'orange' },
-                    { l: 'Prot', v: meal.nutrition?.protein, c: 'emerald' },
-                    { l: 'Fat', v: meal.nutrition?.fat, c: 'blue' },
-                    { l: 'Sug', v: meal.nutrition?.sugar, c: 'purple' },
+                    { l: 'Cal', v: displayNutr?.calories },
+                    { l: 'Prot', v: displayNutr?.protein },
+                    { l: 'Carbs', v: displayNutr?.carbs },
+                    { l: 'Fat', v: displayNutr?.fat },
+                    { l: 'Sug', v: displayNutr?.sugar },
                   ].map((n, i) => (
                     <div key={i} className="bg-stone-50 border border-stone-100 p-3 rounded-xl text-center">
                       <p className="text-[10px] font-bold text-stone-400 uppercase">{n.l}</p>
-                      <p className="text-sm font-bold text-stone-800">{n.v ?? '--'}</p>
+                      <p className="text-sm font-bold text-stone-800">{n.v !== undefined && n.v !== null ? String(n.v) : '—'}</p>
                     </div>
                   ))}
                 </div>
+                  );
+                })()}
               </div>
             </div>
           </div>
         ))}
       </div>
-
-      {/* Duplicate modal */}
-      {showDuplicateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={() => setShowDuplicateModal(null)}>
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-bold text-stone-800 mb-2">Recipe already in library</h3>
-            <p className="text-sm text-stone-600 mb-4">
-              These items are already in the Recipe Book. Saving will link to existing entries and update the menu.
-            </p>
-            <ul className="text-sm text-stone-700 mb-6 space-y-1">
-              {showDuplicateModal.duplicates.map((d, i) => (
-                <li key={i} className="flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-[#2c5f4c]" /> {d.name}
-                </li>
-              ))}
-            </ul>
-            <div className="flex gap-3">
-              <Button variant="outline" className="flex-1" onClick={() => setShowDuplicateModal(null)}>Cancel</Button>
-              <Button className="flex-1 bg-[#2c5f4c] text-white" onClick={showDuplicateModal.proceed}>Save anyway</Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Gallery picker modal */}
       {galleryPickerFor && (
@@ -713,35 +833,54 @@ function SlotActions({
 }
 
 function RecipeBookDropdown({ recipeBook, type, query, onSelect, onClose }) {
+  const q = (query || '').toLowerCase().trim();
+  // Show all matching dishes; prioritize exact prefix matches first, then includes
   const filtered = recipeBook.filter((r) => {
     const name = (r.name || '').toLowerCase();
-    const q = (query || '').toLowerCase();
     const typeMatch = type === 'main' ? (r.type === 'main' || !r.type) : (r.type === 'side' || !r.type);
     return typeMatch && (!q || name.includes(q));
-  }).slice(0, 8);
+  }).sort((a, b) => {
+    if (!q) return 0;
+    const aName = (a.name || '').toLowerCase();
+    const bName = (b.name || '').toLowerCase();
+    const aStarts = aName.startsWith(q);
+    const bStarts = bName.startsWith(q);
+    if (aStarts && !bStarts) return -1;
+    if (!aStarts && bStarts) return 1;
+    return 0;
+  }).slice(0, 10);
   return (
-    <div className="absolute left-0 z-50 mt-1.5 min-w-[320px] w-max max-w-[calc(100vw-2rem)] bg-white rounded-xl shadow-xl border border-stone-200 py-1.5 max-h-64 overflow-y-auto">
-      <div className="px-4 py-2 flex items-center gap-2 text-xs font-semibold text-stone-500 uppercase tracking-wider">
-        <BookOpen className="w-4 h-4 shrink-0" /> Recipe book
+    <div className="absolute left-0 z-50 mt-1.5 min-w-[320px] w-max max-w-[calc(100vw-2rem)] bg-white rounded-xl shadow-2xl border border-stone-200 py-1.5 max-h-72 overflow-y-auto">
+      <div className="px-4 py-2 flex items-center justify-between">
+        <span className="flex items-center gap-2 text-xs font-semibold text-stone-500 uppercase tracking-wider">
+          <BookOpen className="w-4 h-4 shrink-0" /> Recipe book
+        </span>
+        {q && <span className="text-xs text-stone-400">{filtered.length} result{filtered.length !== 1 ? 's' : ''}</span>}
       </div>
       {filtered.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-stone-500">No matches. Type to create new (AI will run).</p>
+        <p className="px-4 py-3 text-sm text-stone-500">No matches for "{query}". On blur, AI will generate a new dish.</p>
       ) : (
         filtered.map((r) => (
           <button
             key={r.id || r.name}
             type="button"
             onMouseDown={(e) => { e.preventDefault(); onSelect(r); }}
-            className="w-full px-4 py-3 text-left hover:bg-stone-50 flex items-center gap-3 min-w-0"
+            className="w-full px-4 py-2.5 text-left hover:bg-[#e6f0eb] flex items-center gap-3 min-w-0 transition-colors"
           >
             {(r.image_url || r.url) ? (
-              <img src={r.image_url || r.url} alt="" className="w-11 h-11 rounded-lg object-cover shrink-0" />
+              <img src={r.image_url || r.url} alt="" className="w-10 h-10 rounded-lg object-cover shrink-0" />
             ) : (
-              <div className="w-11 h-11 rounded-lg bg-stone-200 flex items-center justify-center shrink-0">
+              <div className="w-10 h-10 rounded-lg bg-stone-100 flex items-center justify-center shrink-0">
                 <ImageIcon className="w-5 h-5 text-stone-400" />
               </div>
             )}
-            <span className="font-semibold text-stone-800 truncate">{r.name}</span>
+            <div className="flex-1 min-w-0">
+              <span className="font-semibold text-stone-800 truncate block">{r.name}</span>
+              {r.description && <span className="text-xs text-stone-400 truncate block">{r.description}</span>}
+            </div>
+            <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full shrink-0 ${(r.type === 'side') ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+              {r.type === 'side' ? 'Side' : 'Main'}
+            </span>
           </button>
         ))
       )}

@@ -17,7 +17,7 @@ import {
 import MealCard from './MealCard';
 import InfoBar from './InfoBar';
 
-export default function Home() {
+export default function Home({ session }) {
   const [meals, setMeals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dateRange, setDateRange] = useState('');
@@ -25,6 +25,7 @@ export default function Home() {
   const [galleryImages, setGalleryImages] = useState([]);
   const [pastMenus, setPastMenus] = useState([]);
   const [approvedFeedback, setApprovedFeedback] = useState([]);
+  const [approvedSuggestions, setApprovedSuggestions] = useState([]);
 
   const [suggestionText, setSuggestionText] = useState('');
   const [userEmail, setUserEmail] = useState('');
@@ -37,11 +38,39 @@ export default function Home() {
   const [registerEmail, setRegisterEmail] = useState('');
   const [registering, setRegistering] = useState(false);
   const [isRegistered, setIsRegistered] = useState(false);
+  const [awaitingVerification, setAwaitingVerification] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+
+  // Only treat as registered (can use suggestions/contact) after email verification (magic link sign-in).
+  useEffect(() => {
+    if (session?.user?.email) {
+      setIsRegistered(true);
+      setContactEmail(session.user.email);
+      setAwaitingVerification(false);
+      window.localStorage?.setItem('lorena_registered_email', session.user.email);
+      return;
+    }
+    const stored = typeof window !== 'undefined' ? window.localStorage?.getItem('lorena_registered_email') : null;
+    setIsRegistered(false); // Require verification (session) before allowing suggestions/contact
+    if (stored) setContactEmail(stored);
+  }, [session?.user?.email]);
 
   useEffect(() => {
-    const stored = typeof window !== 'undefined' ? window.localStorage?.getItem('lorena_registered_email') : null;
-    setIsRegistered(!!stored);
-    if (stored) setContactEmail(stored);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+      if (event === 'SIGNED_IN' && newSession?.user?.email) {
+        const email = newSession.user.email.toLowerCase();
+        await supabase.from('registered_emails').upsert(
+          { email, verified: true },
+          { onConflict: 'email' }
+        ).select();
+        window.localStorage?.setItem('lorena_registered_email', email);
+        setIsRegistered(true);
+        setContactEmail(email);
+        setAwaitingVerification(false);
+        toast.success("Email verified! You can now contact us and make suggestions.");
+      }
+    });
+    return () => subscription?.unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -52,31 +81,35 @@ export default function Home() {
 
   const fetchCurrentMenu = async () => {
     try {
-      const { data, error } = await supabase
+      // Try active menu first
+      let menu = null;
+      const { data: activeMenu } = await supabase
         .from('menus')
         .select('*, meals(*)')
         .eq('status', 'active')
-        .order('created_at', { ascending: false })
+        .order('week_start', { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (error || !data) {
+      if (activeMenu) {
+        menu = activeMenu;
+      } else {
+        // Fall back to most recent menu
         const { data: menuList } = await supabase
           .from('menus')
           .select('*, meals(*)')
           .order('week_start', { ascending: false })
           .limit(1);
-        if (menuList?.[0]) {
-          const m = menuList[0];
-          setMeals(m.meals || []);
-          if (m.week_start && m.week_end) {
-            setDateRange(`${format(new Date(m.week_start), 'MMM dd')} – ${format(new Date(m.week_end), 'MMM dd')}`);
-          }
-        }
-      } else {
-        setMeals(data.meals || []);
-        if (data.week_start && data.week_end) {
-          setDateRange(`${format(new Date(data.week_start), 'MMM dd')} – ${format(new Date(data.week_end), 'MMM dd')}`);
+        if (menuList?.[0]) menu = menuList[0];
+      }
+
+      if (menu) {
+        setMeals(menu.meals || []);
+        if (menu.week_start) {
+          // Always show Mon-Sun range
+          const start = new Date(menu.week_start + 'T00:00:00');
+          const end = menu.week_end ? new Date(menu.week_end + 'T00:00:00') : new Date(start.getTime() + 6 * 86400000);
+          setDateRange(`${format(start, 'EEEE, MMM d')} – ${format(end, 'EEEE, MMM d')}`);
         }
       }
     } catch (err) {
@@ -89,8 +122,8 @@ export default function Home() {
   const fetchGalleryAndHistory = async () => {
     try {
       const [menusRes, galleryRes] = await Promise.all([
-        supabase.from('menus').select('*, meals(*)').order('week_start', { ascending: false }).limit(20),
-        supabase.from('gallery_images').select('*').order('created_at', { ascending: false }).limit(24),
+        supabase.from('menus').select('*, meals(*)').order('week_start', { ascending: false }),
+        supabase.from('gallery_images').select('*').order('created_at', { ascending: false }),
       ]);
       const menusData = menusRes?.data || [];
       if (menusData.length) {
@@ -101,8 +134,8 @@ export default function Home() {
             week_end: menu.week_end,
           }))
         );
-        setGalleryMeals(allMeals.filter((m) => m.title?.trim()).slice(0, 24));
-        setPastMenus(menusData.slice(0, 8));
+        setGalleryMeals(allMeals.filter((m) => m.title?.trim()));
+        setPastMenus(menusData);
       }
       if (galleryRes?.data?.length) setGalleryImages(galleryRes.data);
     } catch (err) {
@@ -112,18 +145,22 @@ export default function Home() {
 
   const fetchApprovedFeedback = async () => {
     try {
-      const { data } = await supabase
-        .from('feedback')
-        .select('*')
-        .eq('status', 'approved')
-        .order('created_at', { ascending: false });
-      if (data) setApprovedFeedback(data);
+      const [fbRes, sugRes] = await Promise.all([
+        supabase.from('feedback').select('*').eq('status', 'approved').order('created_at', { ascending: false }).then(r => r).catch(() => ({ data: [] })),
+        supabase.from('suggestions').select('*').eq('status', 'approved').order('created_at', { ascending: false }).then(r => r).catch(() => ({ data: [] })),
+      ]);
+      if (fbRes?.data) setApprovedFeedback(fbRes.data);
+      if (sugRes?.data) setApprovedSuggestions(sugRes.data);
     } catch {
-      // feedback table may not exist yet
+      // tables may not exist yet
     }
   };
 
-  const handleSubmitMealFeedback = async (mealId, rating, content, userEmailVal) => {
+  const handleSubmitMealFeedback = async (mealId, rating, content, userEmailVal, mealTitle, firstName) => {
+    if (mealId == null || mealId === undefined) {
+      toast.error('This review could not be linked to a meal. Please refresh and try again.');
+      return;
+    }
     try {
       const { error } = await supabase.from('feedback').insert([
         {
@@ -131,11 +168,13 @@ export default function Home() {
           rating,
           content: content?.trim() || null,
           user_email: userEmailVal?.trim() || null,
+          first_name: firstName?.trim() || null,
           status: 'pending',
         },
       ]);
       if (error) throw error;
-      toast.success('Thank you! Your feedback will be reviewed before it appears.');
+      const mealLabel = mealTitle ? ` for "${mealTitle}"` : '';
+      toast.success(`Thank you! Your review${mealLabel} will be reviewed before it appears.`);
     } catch (err) {
       toast.error('Failed to submit feedback.');
     }
@@ -173,15 +212,21 @@ export default function Home() {
     }
     setRegistering(true);
     try {
-      const { error } = await supabase.from('registered_emails').insert([{ email }]);
-      if (error && error.code !== '23505') throw error; // ignore duplicate
-      if (!error) toast.success("You're registered! You can now contact us and make suggestions.");
-      window.localStorage?.setItem('lorena_registered_email', email);
-      setIsRegistered(true);
-      setContactEmail(email);
+      // Send a magic-link / OTP email for verification
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          shouldCreateUser: true,
+          emailRedirectTo: window.location.origin + (window.location.pathname || '') + '#/',
+        },
+      });
+      if (error) throw error;
+      setAwaitingVerification(true);
+      toast.success('Check your email for a verification link!');
       setRegisterEmail('');
     } catch (err) {
-      toast.error('Registration failed. Try again.');
+      console.error(err);
+      toast.error('Failed to send verification email. Try again.');
     } finally {
       setRegistering(false);
     }
@@ -240,12 +285,24 @@ export default function Home() {
             }}
           />
         </div>
-        <div className="relative max-w-6xl mx-auto px-6 sm:px-8 py-16 sm:py-24 text-center">
+        <div className="relative max-w-7xl mx-auto px-6 sm:px-8 py-16 sm:py-24 text-center">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.6 }}
+            className="mb-6"
+          >
+            <img
+              src="https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/6944e802ebbb976a9a2791a1/e01294408_logo_optimized_1000.png"
+              alt="Lorena's Home Cooked Meals"
+              className="h-40 sm:h-52 md:h-64 w-auto mx-auto object-contain drop-shadow-2xl"
+            />
+          </motion.div>
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
-            className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-sm border border-white/20 rounded-full px-4 py-2 mb-8"
+            className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-sm border border-white/20 rounded-full px-4 py-2 mb-6"
           >
             <Sparkles className="w-4 h-4" />
             <span className="text-sm font-medium">Weekly meal prep · Delivered with care</span>
@@ -264,7 +321,7 @@ export default function Home() {
             transition={{ delay: 0.2, duration: 0.5 }}
             className="text-lg sm:text-xl text-white/90 max-w-xl mx-auto mb-8"
           >
-            Chef-crafted bento-style meals, made fresh for your week. One main, two sides—every time.
+            Freedom From Cravings, Satisfying Addictions.
           </motion.p>
           <motion.div
             initial={{ opacity: 0 }}
@@ -280,22 +337,22 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ——— THIS WEEK'S BENTO ——— */}
-      <section className="max-w-6xl mx-auto px-6 sm:px-8 py-14 sm:py-20">
+      {/* ——— THIS WEEK'S MEALS ——— */}
+      <section className="max-w-7xl mx-auto px-6 sm:px-8 py-14 sm:py-20">
         <div className="text-center mb-12">
           <h2 className="text-3xl sm:text-4xl font-bold text-[#1b4d3e] mb-2 flex items-center justify-center gap-2">
             <UtensilsCrossed className="w-8 h-8" />
-            This Week's Bento
+            This Week&apos;s Meals
           </h2>
           <p className="text-stone-500 max-w-lg mx-auto">
-            Each meal is a complete bento: one main dish and two sides, with chef descriptions and nutrition info.
+            One main dish and two sides per meal, with chef descriptions and nutrition info.
           </p>
         </div>
         {meals.length > 0 ? (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8"
+            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 items-start"
           >
             {meals.map((meal, index) => (
               <MealCard
@@ -317,19 +374,19 @@ export default function Home() {
       </section>
 
       {/* ——— PRICING / ORDER INFO ——— */}
-      <section className="max-w-6xl mx-auto px-6 sm:px-8 pb-14">
+      <section className="max-w-7xl mx-auto px-6 sm:px-8 pb-14">
         <InfoBar />
       </section>
 
       {/* ——— GALLERY STRIP (gallery_images or past meals) ——— */}
       {(galleryImages.length > 0 || galleryMeals.length > 0) && (
         <section className="bg-stone-50 border-y border-stone-100 py-14 sm:py-20">
-          <div className="max-w-6xl mx-auto px-6 sm:px-8 mb-10">
+          <div className="max-w-7xl mx-auto px-6 sm:px-8 mb-10">
             <h2 className="text-2xl sm:text-3xl font-bold text-[#1b4d3e] mb-1">From the Kitchen</h2>
             <p className="text-stone-500">A peek at recent creations and portfolio photos.</p>
           </div>
           <div className="overflow-x-auto pb-4 -mx-4 sm:mx-0">
-            <div className="flex gap-5 px-6 sm:px-8 min-w-max max-w-6xl mx-auto">
+            <div className="flex gap-5 px-6 sm:px-8 min-w-max max-w-7xl mx-auto">
               {galleryImages.length > 0
                 ? galleryImages.slice(0, 12).map((img) => (
                     <GalleryStripImage key={img.id} item={img} />
@@ -339,7 +396,7 @@ export default function Home() {
                   ))}
             </div>
           </div>
-          <div className="max-w-6xl mx-auto px-6 sm:px-8 mt-8 text-center">
+          <div className="max-w-7xl mx-auto px-6 sm:px-8 mt-8 text-center">
             <Link
               to="/gallery"
               className="inline-flex items-center gap-2 text-[#1b4d3e] font-semibold hover:underline"
@@ -352,7 +409,7 @@ export default function Home() {
       )}
 
       {/* ——— HISTORICAL MEAL VIEWER ——— */}
-      <section className="max-w-6xl mx-auto px-6 sm:px-8 py-14 sm:py-20">
+      <section className="max-w-7xl mx-auto px-6 sm:px-8 py-14 sm:py-20">
         <div className="bg-[#1b4d3e] rounded-3xl p-8 sm:p-12 text-white relative overflow-hidden">
           <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/2" />
           <div className="relative">
@@ -364,16 +421,20 @@ export default function Home() {
               Missed a week? Browse our archive of past menus and see what's been on the table.
             </p>
             <div className="flex flex-wrap gap-3 mb-8">
-              {pastMenus.slice(0, 6).map((menu) => (
-                <span
-                  key={menu.id || menu.week_start}
-                  className="bg-white/10 backdrop-blur-sm rounded-xl px-4 py-2 text-sm font-medium"
-                >
-                  {menu.week_start
-                    ? `${format(new Date(menu.week_start), 'MMM d')} – ${format(new Date(menu.week_end), 'd')}`
-                    : '—'}
-                </span>
-              ))}
+              {pastMenus.slice(0, 8).map((menu) => {
+                const start = menu.week_start ? new Date(menu.week_start + 'T00:00:00') : null;
+                const end = menu.week_end ? new Date(menu.week_end + 'T00:00:00') : (start ? new Date(start.getTime() + 6 * 86400000) : null);
+                return (
+                  <span
+                    key={menu.id || menu.week_start}
+                    className="bg-white/10 backdrop-blur-sm rounded-xl px-4 py-2 text-sm font-medium"
+                  >
+                    {start && end
+                      ? `${format(start, 'EEE, MMM d')} – ${format(end, 'EEE, MMM d')}`
+                      : '—'}
+                  </span>
+                );
+              })}
             </div>
             <Link
               to="/gallery"
@@ -386,36 +447,56 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ——— REGISTER EMAIL (gated) ——— */}
+      {/* ——— REGISTER EMAIL (gated with verification) ——— */}
       {!isRegistered && (
-        <section className="max-w-6xl mx-auto px-6 sm:px-8 py-14 sm:py-20">
-          <div className="bg-amber-50 border border-amber-100 rounded-3xl p-8 text-center max-w-xl mx-auto">
-            <h2 className="text-xl font-bold text-stone-800 mb-2">Register your email</h2>
-            <p className="text-stone-600 text-sm mb-6">
-              To contact us or make meal suggestions, register your email below. We'll only use it to respond.
-            </p>
-            <input
-              type="email"
-              value={registerEmail}
-              onChange={(e) => setRegisterEmail(e.target.value)}
-              placeholder="your@email.com"
-              className="w-full rounded-xl border border-stone-200 px-4 py-3 mb-4 focus:ring-2 focus:ring-[#1b4d3e]/20 focus:border-[#1b4d3e]"
-            />
-            <button
-              onClick={handleRegisterEmail}
-              disabled={registering}
-              className="w-full bg-[#1b4d3e] text-white font-semibold py-3 rounded-xl hover:bg-[#153a2f] disabled:opacity-50"
-            >
-              {registering ? 'Registering...' : 'Register'}
-            </button>
+        <section className="max-w-7xl mx-auto px-6 sm:px-8 py-14 sm:py-20 w-full flex justify-center">
+          <div className="bg-amber-50 border border-amber-100 rounded-3xl p-8 text-center max-w-xl w-full mx-auto">
+            {awaitingVerification ? (
+              <>
+                <Mail className="w-12 h-12 text-[#1b4d3e] mx-auto mb-4" />
+                <h2 className="text-xl font-bold text-stone-800 mb-2">Check your email</h2>
+                <p className="text-stone-600 text-sm mb-4">
+                  We sent a verification link to your email. Click it to complete registration and unlock contact and suggestion features.
+                </p>
+                <p className="text-xs text-stone-400">
+                  Didn't receive it? Check spam, or{' '}
+                  <button type="button" onClick={() => setAwaitingVerification(false)} className="text-[#1b4d3e] underline font-medium">
+                    try again
+                  </button>
+                  .
+                </p>
+              </>
+            ) : (
+              <>
+                <h2 className="text-xl font-bold text-stone-800 mb-2">Register your email</h2>
+                <p className="text-stone-600 text-sm mb-6">
+                  To contact us or make meal suggestions, verify your email below. We'll send a quick verification link.
+                </p>
+                <input
+                  type="email"
+                  value={registerEmail}
+                  onChange={(e) => setRegisterEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleRegisterEmail()}
+                  placeholder="your@email.com"
+                  className="w-full rounded-xl border border-stone-200 px-4 py-3 mb-4 focus:ring-2 focus:ring-[#1b4d3e]/20 focus:border-[#1b4d3e]"
+                />
+                <button
+                  onClick={handleRegisterEmail}
+                  disabled={registering}
+                  className="w-full bg-[#1b4d3e] text-white font-semibold py-3 rounded-xl hover:bg-[#153a2f] disabled:opacity-50"
+                >
+                  {registering ? 'Sending verification...' : 'Verify & Register'}
+                </button>
+              </>
+            )}
           </div>
         </section>
       )}
 
       {/* ——— CONTACT & INQUIRY (gated) ——— */}
-      <section className="max-w-6xl mx-auto px-6 sm:px-8 py-14 sm:py-20">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-          <div className="bg-white rounded-3xl border border-stone-200 shadow-sm p-8">
+      <section className="max-w-7xl mx-auto px-6 sm:px-8 py-14 sm:py-20 w-full flex justify-center">
+        <div className="w-full flex justify-center">
+          <div className="bg-white rounded-3xl border border-stone-200 shadow-sm p-8 w-full max-w-xl">
             <h2 className="text-2xl font-bold text-[#1b4d3e] mb-1 flex items-center gap-2">
               <Mail className="w-6 h-6" />
               Contact & Inquiry
@@ -454,77 +535,57 @@ export default function Home() {
             )}
           </div>
 
-          {/* ——— SUGGESTION BOX (gated) ——— */}
-          <div className="bg-white rounded-3xl border border-stone-200 shadow-sm p-8">
-            <h2 className="text-2xl font-bold text-[#1b4d3e] mb-1 flex items-center gap-2">
-              <MessageCircle className="w-6 h-6" />
-              Make a suggestion
-            </h2>
-            {!isRegistered ? (
-              <p className="text-stone-500 text-sm">
-                Register your email above to suggest meals you'd love to see again.
-              </p>
-            ) : (
-              <>
-                <p className="text-stone-500 text-sm mb-6">
-                  Have a meal you'd love to see again? Tell us.
-                </p>
-                <textarea
-                  value={suggestionText}
-                  onChange={(e) => setSuggestionText(e.target.value)}
-                  placeholder="e.g. I'd love to see the Enchiladas again..."
-                  rows={4}
-                  className="w-full rounded-xl border border-stone-200 px-4 py-3 mb-4 focus:ring-2 focus:ring-[#1b4d3e]/20 focus:border-[#1b4d3e] resize-none"
-                />
-                <button
-                  onClick={handleSendSuggestion}
-                  disabled={sendingSuggestion}
-                  className="w-full bg-stone-800 text-white font-semibold py-3 rounded-xl hover:bg-stone-900 disabled:opacity-50"
-                >
-                  {sendingSuggestion ? 'Sending...' : 'Send suggestion'}
-                </button>
-              </>
-            )}
           </div>
-        </div>
       </section>
 
-      {/* ——— APPROVED FEEDBACK (social proof) ——— */}
+      {/* Approved Feedback / Reviews */}
       {approvedFeedback.length > 0 && (
-        <section className="bg-stone-100 border-y border-stone-200 py-14 sm:py-20">
-          <div className="max-w-6xl mx-auto px-6 sm:px-8">
-            <h2 className="text-2xl font-bold text-[#1b4d3e] mb-8 text-center flex items-center justify-center gap-2">
-              <Quote className="w-6 h-6" />
-              What people are saying
-            </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {approvedFeedback.map((fb) => (
-                <div
-                  key={fb.id}
-                  className="bg-white rounded-2xl p-6 shadow-sm border border-stone-100"
-                >
-                  <div className="flex gap-1 mb-3">
-                    {[1, 2, 3, 4, 5].map((n) => (
-                      <Star
-                        key={n}
-                        className={`w-4 h-4 ${n <= (fb.rating || 0) ? 'fill-amber-400 text-amber-400' : 'text-stone-200'}`}
-                      />
-                    ))}
+        <section className="max-w-7xl mx-auto px-6 sm:px-8 py-16">
+          <motion.div initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} transition={{ duration: 0.5 }}>
+            <h2 className="text-3xl font-black text-[#1a3c30] mb-2 text-center">What People Are Saying</h2>
+            <p className="text-stone-500 text-center mb-10">Real feedback from our customers</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {approvedFeedback.slice(0, 6).map((fb) => {
+                const fbMeal = meals.find((m) => m.id === fb.meal_id);
+                const dishImg = fbMeal?.main_img || fbMeal?.image_main || null;
+                const dishName = fb.meal_title || fbMeal?.title || null;
+                return (
+                  <div key={fb.id} className="bg-white rounded-2xl border border-stone-100 shadow-sm p-6">
+                    {/* Dish thumbnail + name */}
+                    {(dishImg || dishName) && (
+                      <div className="flex items-center gap-2.5 mb-3 pb-3 border-b border-stone-100">
+                        {dishImg && (
+                          <img
+                            src={dishImg}
+                            alt={dishName || 'Dish'}
+                            className="w-10 h-10 rounded-lg object-cover border border-stone-200 flex-shrink-0"
+                          />
+                        )}
+                        {dishName && (
+                          <p className="text-xs font-bold text-stone-700 leading-tight">{dishName}</p>
+                        )}
+                      </div>
+                    )}
+                    <div className="flex gap-1 mb-3">
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <Star key={n} className={`w-5 h-5 ${n <= (fb.rating || 0) ? 'fill-amber-400 text-amber-400' : 'text-stone-200'}`} />
+                      ))}
+                    </div>
+                    {fb.content && <p className="text-stone-700 text-sm italic leading-relaxed mb-3">&ldquo;{fb.content}&rdquo;</p>}
+                    <p className="text-xs text-stone-400 font-medium">
+                      {fb.first_name || 'A customer'} {fb.created_at && <span>· {new Date(fb.created_at).toLocaleDateString()}</span>}
+                    </p>
                   </div>
-                  {fb.content && <p className="text-stone-700 text-sm italic">&ldquo;{fb.content}&rdquo;</p>}
-                  {fb.user_email && (
-                    <p className="text-stone-400 text-xs mt-2">— {fb.user_email}</p>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
-          </div>
+          </motion.div>
         </section>
       )}
 
       {/* Footer */}
       <footer className="border-t border-stone-200 py-8">
-        <div className="max-w-6xl mx-auto px-6 sm:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-stone-500">
+        <div className="max-w-7xl mx-auto px-6 sm:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-stone-500">
           <span>© Lorena's Home Cooked Meals</span>
           <Link to="/login" className="text-[#1b4d3e] font-medium hover:underline">
             Admin

@@ -51,7 +51,7 @@ export default function MenuHistory({ menus = [], onEdit, onDelete }) {
                       {start} – {end}
                     </p>
                     <p className="text-sm text-stone-500">
-                      {mealCount} bento{mealCount !== 1 ? 's' : ''}
+                      {mealCount} meal{mealCount !== 1 ? 's' : ''}
                     </p>
                   </div>
                 </div>

@@ -13,15 +13,12 @@ export default function Gallery() {
 
   const fetchGallery = async () => {
     try {
-      const { data, error } = await supabase
-        .from('menus')
-        .select('*, meals(*)')
-        .order('week_start', { ascending: false })
-        .limit(50)
+      const [menusRes, galleryRes] = await Promise.all([
+        supabase.from('menus').select('*, meals(*)').order('week_start', { ascending: false }).limit(50),
+        supabase.from('gallery_images').select('*').order('created_at', { ascending: false }).limit(50).then((r) => r).catch(() => ({ data: [] })),
+      ])
 
-      if (error) throw error
-
-      const allMeals = (data || []).flatMap((menu) => {
+      const allMeals = (menusRes?.data || []).flatMap((menu) => {
         if (!menu.meals || !Array.isArray(menu.meals)) return []
         return menu.meals.map((meal) => ({
           ...meal,
@@ -29,9 +26,19 @@ export default function Gallery() {
           week_end: menu.week_end,
         }))
       })
-
       const validMeals = allMeals.filter((m) => m.title && m.title.length > 2)
-      setPhotos(validMeals)
+
+      const galleryItems = (galleryRes?.data || []).map((g) => ({
+        id: g.id,
+        title: g.title || 'Gallery',
+        image_main: g.image_url,
+        main_img: g.image_url,
+        menuDate: g.created_at,
+        side: null,
+        side2: null,
+      })).filter((g) => g.image_main || g.main_img)
+
+      setPhotos([...validMeals, ...galleryItems])
     } catch (error) {
       console.error('Gallery Error:', error)
     } finally {
@@ -40,7 +47,7 @@ export default function Gallery() {
   }
 
   return (
-    <div className="pb-20 px-6 sm:px-8 max-w-6xl mx-auto">
+    <div className="pb-20 px-6 sm:px-8 max-w-7xl mx-auto">
       <div className="text-center py-14">
         <h1 className="text-4xl sm:text-5xl font-script font-bold text-[#1b4d3e] mb-2">
           Historical Meal Viewer
