@@ -184,6 +184,23 @@ const estimatePrice = (itemName, category) => {
     if (/\bseasoning\b.*\bpacket\b|\btaco seasoning\b/.test(lower)) return 1.08;
     if (/\bcumin\b|\bpaprika\b|\boregano\b|\bthyme\b|\brosemary\b|\bcayenne\b|\bchili powder\b|\bgarlic powder\b|\bonion powder\b/.test(lower)) return 1.98;
 
+    // Pantry staples (often added as "common items")
+    if (/\bsalt\b/.test(lower)) return 0.88;
+    if (/\bblack pepper\b|\bpepper\b/.test(lower)) return 1.98;
+    if (/\bflour\b/.test(lower)) return 2.48;
+    if (/\bsugar\b/.test(lower)) return 2.28;
+    if (/\beggs?\b/.test(lower)) return Math.max(2.48, qty.amount * 0.21);
+    if (/\bmilk\b/.test(lower)) return qty.unit === 'gal' ? 2.98 : 2.48;
+    if (/\bbutter\b/.test(lower)) return 3.48;
+    if (/\bvegetable oil\b/.test(lower)) return 2.98;
+    if (/\bvinegar\b/.test(lower)) return 1.98;
+    if (/\bhoney\b/.test(lower)) return 3.98;
+    if (/\bketchup\b/.test(lower)) return 1.98;
+    if (/\bmustard\b/.test(lower)) return 1.48;
+    if (/\bmayonnaise\b|\bmayo\b/.test(lower)) return 2.98;
+    if (/\bcream of mushroom\b|\bcream of chicken\b/.test(lower)) return 1.18;
+    if (/\bbreadcrumb/.test(lower)) return 1.48;
+
     // Category fallbacks (deterministic, no randomness)
     const prices = { 'Meat': 5.48, 'Produce': 1.48, 'Dairy': 2.48, 'Bakery': 2.28, 'Pantry': 1.98, 'Frozen': 3.28, 'Spices': 1.48, 'Beverages': 2.28, 'Other': 2.28 };
     return prices[category] || 2.28;
@@ -606,17 +623,30 @@ RULES:
 - Return ONLY the JSON array. No markdown, no explanation.`;
 
             const responseText = await chatAI([
-                { role: 'system', content: 'Walmart pricing expert. Return ONLY a JSON array. price = total cost for exact quantity needed. Use realistic Walmart prices.' },
+                { role: 'system', content: 'Walmart pricing expert. Return ONLY a JSON array. price = total cost for exact quantity needed. Use realistic Walmart prices. For ONE ingredient still return an array with one object: [{ "productName": "...", "price": number, ... }].' },
                 { role: 'user', content: prompt }
             ]);
-            const data = extractJSON(responseText);
-            if (Array.isArray(data) && data.length >= Math.min(3, ingredientsList.length)) {
-                // Validate prices aren't absurd
-                const validated = data.map((d, idx) => {
+            let data = extractJSON(responseText);
+            if (data && !Array.isArray(data) && typeof data === 'object' && data !== null) {
+                data = [data];
+            }
+            const minNeeded = Math.max(1, Math.min(3, ingredientsList.length));
+            if (Array.isArray(data) && data.length >= minNeeded) {
+                const validated = data.slice(0, ingredientsList.length).map((d, idx) => {
+                    const term = ingredientsList[idx] || d.baseTerm || '';
                     let price = typeof d.price === 'number' ? d.price : parseFloat(d.price);
-                    if (isNaN(price) || price <= 0) price = estimatePrice(ingredientsList[idx] || d.baseTerm, d.category);
-                    if (price > 50) price = estimatePrice(ingredientsList[idx] || d.baseTerm, d.category); // Cap absurd prices
-                    return { ...d, price, totalPrice: price, isRealPrice: false };
+                    if (isNaN(price) || price <= 0) price = estimatePrice(term, d.category || 'Other');
+                    if (price > 50) price = estimatePrice(term, d.category || 'Other');
+                    return {
+                        baseTerm: term,
+                        productName: d.productName || term,
+                        brand: d.brand || '',
+                        size: d.size || '',
+                        price,
+                        totalPrice: price,
+                        category: d.category || 'Other',
+                        isRealPrice: false,
+                    };
                 });
                 return validated;
             }
@@ -842,9 +872,27 @@ export const lookupSingleIngredient = async (ingredientString) => {
     }
 
     // Fallback: AI pricing then estimate
-    const aiResult = await matchWithAIFallback([trimmed]);
-    const ai = aiResult[0] || {};
-    const price = (typeof ai.totalPrice === 'number' && ai.totalPrice > 0) ? ai.totalPrice : (typeof ai.price === 'number' ? ai.price : estimatePrice(trimmed, ai.category || 'Other'));
+    let aiResult = await matchWithAIFallback([trimmed]);
+    let ai = aiResult[0] || {};
+    let price = (typeof ai.totalPrice === 'number' && ai.totalPrice > 0) ? ai.totalPrice : (typeof ai.price === 'number' ? ai.price : estimatePrice(trimmed, ai.category || 'Other'));
+
+    // If we got the generic $2.28 (Other), try a dedicated single-item AI call for better price
+    const genericFallback = estimatePrice(trimmed, 'Other');
+    if (price === genericFallback && genericFallback === 2.28) {
+        try {
+            const oneItemPrompt = `Estimate the total Walmart price to buy this exact grocery item. Return ONLY valid JSON: {"productName": "short product name", "price": number, "category": "Meat|Produce|Dairy|Pantry|Bakery|Spices|Other"}. Item: "${trimmed}". price = total cost to buy the quantity shown. No markdown.`;
+            const text = await chatAI([
+                { role: 'system', content: 'Walmart grocery pricing. Return ONLY one JSON object with productName, price (number), category. Realistic prices.' },
+                { role: 'user', content: oneItemPrompt }
+            ]);
+            const one = extractJSON(text);
+            if (one && typeof one.price === 'number' && one.price > 0 && one.price <= 75) {
+                ai = { productName: one.productName || trimmed, price: one.price, totalPrice: one.price, category: one.category || 'Other' };
+                price = one.price;
+            }
+        } catch (e) { /* keep batch result */ }
+    }
+
     const capped = price > 40 ? estimatePrice(trimmed, ai.category || 'Other') : price;
     return {
         id: Math.random().toString(36).substr(2, 9),

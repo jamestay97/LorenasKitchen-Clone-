@@ -195,6 +195,33 @@ export default function ToolsTab({ menus }) {
         }
     };
 
+    const handleAddCustomItem = () => {
+        const name = newItemInput.trim();
+        if (!name) return;
+        if (groceryItems.some((i) => (i.realName || i.baseTerm || '').toLowerCase() === name.toLowerCase())) {
+            toast.info('Already in list');
+            return;
+        }
+        const searchName = name.replace(/\(.*?\)/g, '').trim();
+        setGroceryItems((prev) => [
+            ...prev,
+            {
+                id: Math.random().toString(36).substr(2, 9),
+                baseTerm: name,
+                realName: name,
+                category: 'Other',
+                price: 0,
+                totalPrice: 0,
+                priceLoading: false,
+                walmartUrl: `https://www.walmart.com/search?q=${encodeURIComponent(searchName)}`,
+                purchased: false,
+                meal: '',
+            },
+        ]);
+        setNewItemInput('');
+        toast.success(`Added "${name}" — enter price or use Get live prices`);
+    };
+
     const handleAddItem = () => {
         const name = newItemInput.trim();
         if (!name) return;
@@ -533,27 +560,33 @@ export default function ToolsTab({ menus }) {
                     )}
                 </div>
 
-                {groceryItems.length > 0 && (
-                    <div className="mt-6">
+                {/* Add item to list — always visible so you can add custom or first item */}
+                <div className="mt-6 bg-stone-50 border border-stone-200 rounded-xl p-4 mb-4">
                         {/* Add item to list */}
-                        <div className="bg-stone-50 border border-stone-200 rounded-xl p-4 mb-4">
+                        <div className="mb-0">
                             <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">Add Item to List</p>
-                            <p className="text-xs text-stone-400 mb-2">Type an ingredient (e.g. Ground beef (2 lbs) or Chicken breast). We&apos;ll search Walmart and add a price &amp; link.</p>
-                            <div className="flex gap-2">
+                            <p className="text-xs text-stone-400 mb-2">Type any item. Use <strong>Add</strong> to look up a price online, or <strong>Add custom</strong> to add it instantly (you can enter the price yourself).</p>
+                            <div className="flex flex-wrap gap-2">
                                 <input
                                     type="text"
                                     value={newItemInput}
                                     onChange={(e) => setNewItemInput(e.target.value)}
                                     onKeyDown={(e) => e.key === 'Enter' && handleAddItem()}
-                                    placeholder="e.g. Ground beef (2 lbs), Olive oil (1 bottle)"
-                                    className="flex-1 p-3 border border-stone-200 rounded-xl text-sm bg-white"
+                                    placeholder="e.g. Ground beef (2 lbs), Olive oil, or any custom item"
+                                    className="flex-1 min-w-[200px] p-3 border border-stone-200 rounded-xl text-sm bg-white"
                                 />
                                 <button type="button" onClick={handleAddItem} disabled={!newItemInput.trim()} className="bg-[#2c5f4c] text-white px-5 py-3 rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-[#1a3c30] disabled:opacity-50 disabled:cursor-not-allowed">
                                     <Plus className="w-4 h-4" /> Add
                                 </button>
+                                <button type="button" onClick={handleAddCustomItem} disabled={!newItemInput.trim()} className="bg-stone-200 text-stone-800 px-5 py-3 rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-stone-300 disabled:opacity-50 disabled:cursor-not-allowed" title="Add without looking up price">
+                                    <Plus className="w-4 h-4" /> Add custom
+                                </button>
                             </div>
                         </div>
+                </div>
 
+                {groceryItems.length > 0 && (
+                    <div className="mt-4">
                         {/* Actions toolbar */}
                         <div className="flex flex-wrap items-center gap-2 mb-4">
                             <button type="button" onClick={handleRefreshPrices} disabled={refreshingPrices} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[#2c5f4c] text-white font-semibold text-sm hover:bg-[#1a3c30] disabled:opacity-60 disabled:cursor-not-allowed" title="Fetch current prices from Walmart">
