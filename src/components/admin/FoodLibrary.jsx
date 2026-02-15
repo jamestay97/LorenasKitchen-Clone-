@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
+import { invokeGenerateTextWithRetry } from '../../services/aiService';
 import { toast } from 'sonner';
 import { BookOpen, Search, Image as ImageIcon, Plus, Pencil, Trash2, Loader2, Sparkles, FileText } from 'lucide-react';
 
@@ -129,16 +130,14 @@ export default function FoodLibrary({ dishes = [], onRefresh }) {
     }
     setGeneratingText(true);
     try {
-      const { data, error } = await supabase.functions.invoke('generate-text', {
-        body: { main: name, side1: '', side2: '' },
-      });
+      const { data, error } = await invokeGenerateTextWithRetry({ main: name, side1: '', side2: '' });
       if (error) throw error;
-      if (data && !data.error) {
+      if (data) {
         setForm((f) => ({
           ...f,
           description: data.description ?? f.description,
           nutrition: data.nutrition ?? f.nutrition,
-          ingredients: Array.isArray(data.ingredients) ? data.ingredients : f.ingredients,
+          ingredients: data.ingredients?.length ? data.ingredients : f.ingredients,
         }));
         toast.success('Description & nutrition generated');
       } else {
@@ -234,6 +233,9 @@ export default function FoodLibrary({ dishes = [], onRefresh }) {
           {form.nutrition && typeof form.nutrition === 'object' && (
             <div className="mt-2 p-3 bg-stone-50 rounded-xl border border-stone-100">
               <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">Nutrition</p>
+              {form.nutrition.servingSize && (
+                <p className="text-xs text-stone-500 mb-2">Serving size: {form.nutrition.servingSize}</p>
+              )}
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 {[
                   { l: 'Cal', v: form.nutrition.calories },

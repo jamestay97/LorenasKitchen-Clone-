@@ -21,6 +21,7 @@ import {
   MoreVertical,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { invokeGenerateTextWithRetry } from '../../services/aiService';
 
 const BENTO_IMAGE_PROMPT = (name) =>
   `professional food photography, ${name}, single dish on white plate, restaurant quality, 4k, appetizing`;
@@ -49,12 +50,14 @@ function summedNutrition(meal, recipeBook) {
   // If we found at least 2 of the 3 dishes in the recipe book, sum their nutrition
   if (dishes.length >= 2) {
     const sum = (key) => dishes.reduce((acc, d) => acc + parseNutrVal(d[key]), 0);
+    const firstServing = dishes[0]?.servingSize;
     return {
       calories: Math.round(sum('calories')),
       protein: fmtG(sum('protein')),
       carbs: fmtG(sum('carbs')),
       fat: fmtG(sum('fat')),
       sugar: fmtG(sum('sugar')),
+      servingSize: firstServing || '1 plate',
     };
   }
   return meal.nutrition ?? null;
@@ -249,17 +252,15 @@ export default function MenuEditor({
       // Auto-generate description & nutrition whenever all 3 items are filled
       const m = updated[index];
       if (m.title?.trim() && (m.side?.trim() || m.side2?.trim())) {
-        const { data: textData } = await supabase.functions.invoke('generate-text', {
-          body: {
-            main: m.title,
-            side1: m.side || '',
-            side2: m.side2 || '',
-          },
+        const { data: textData } = await invokeGenerateTextWithRetry({
+          main: m.title,
+          side1: m.side || '',
+          side2: m.side2 || '',
         });
-        if (textData && !textData.error) {
+        if (textData) {
           updated[index].description = textData.description ?? updated[index].description;
           updated[index].nutrition = textData.nutrition ?? updated[index].nutrition;
-          updated[index].ingredients = Array.isArray(textData.ingredients) ? textData.ingredients : (updated[index].ingredients ?? []);
+          updated[index].ingredients = textData.ingredients?.length ? textData.ingredients : (updated[index].ingredients ?? []);
           setMeals([...updated]);
         }
       }
@@ -283,14 +284,12 @@ export default function MenuEditor({
       return next;
     });
     try {
-      const { data: textData } = await supabase.functions.invoke('generate-text', {
-        body: {
-          main: mealSnapshot.title,
-          side1: mealSnapshot.side || '',
-          side2: mealSnapshot.side2 || '',
-        },
+      const { data: textData } = await invokeGenerateTextWithRetry({
+        main: mealSnapshot.title,
+        side1: mealSnapshot.side || '',
+        side2: mealSnapshot.side2 || '',
       });
-      if (textData && !textData.error) {
+      if (textData) {
         setMeals((prev) => {
           const next = [...prev];
           if (next[index]) {
@@ -298,7 +297,7 @@ export default function MenuEditor({
               ...next[index],
               description: textData.description ?? next[index].description,
               nutrition: textData.nutrition ?? next[index].nutrition,
-              ingredients: Array.isArray(textData.ingredients) ? textData.ingredients : (next[index].ingredients ?? []),
+              ingredients: textData.ingredients?.length ? textData.ingredients : (next[index].ingredients ?? []),
               isGenerating: false,
             };
           }
@@ -356,10 +355,12 @@ export default function MenuEditor({
     updated[index].isGenerating = true;
     setMeals(updated);
     try {
-      const { data } = await supabase.functions.invoke('generate-text', {
-        body: { main: m.title, side1: m.side || '', side2: m.side2 || '' },
+      const { data } = await invokeGenerateTextWithRetry({
+        main: m.title,
+        side1: m.side || '',
+        side2: m.side2 || '',
       });
-      if (data && !data.error) {
+      if (data) {
         updated[index].description = data.description ?? '';
         updated[index].nutrition = data.nutrition ?? null;
         updated[index].ingredients = data.ingredients ?? null;
@@ -369,6 +370,7 @@ export default function MenuEditor({
       } else {
         updated[index].isGenerating = false;
         setMeals([...updated]);
+        toast.error('Regeneration failed');
       }
     } catch (e) {
       updated[index].isGenerating = false;
@@ -451,12 +453,12 @@ export default function MenuEditor({
       }
 
       // 2) Upsert menu (menus table: week_start, week_end, status) and get id
+      // Do not send id in payload: upsert matches on week_start and returns the row id.
       const menuPayload = {
         week_start: weekStart,
         week_end: weekEnd,
         status: 'active',
       };
-      if (editId) menuPayload.id = editId;
       const { data: savedMenu, error: menuError } = await supabase
         .from('menus')
         .upsert(menuPayload, { onConflict: 'week_start' })
@@ -465,14 +467,37 @@ export default function MenuEditor({
       if (menuError) throw menuError;
       const menuId = savedMenu.id;
 
-      // 3) Replace meals for this menu (meals table: menu_id, title, side, side2, image_main, image_side1, image_side2, nutrition)
-      await supabase.from('meals').delete().eq('menu_id', menuId);
-      for (const meal of mealsToSave) {
-        if (!meal.title) continue;
+      // 3) Update meals in place by slot index so meal IDs stay stable and feedback.meal_id still matches the dish
+      const { data: existingMeals } = await supabase
+        .from('meals')
+        .select('id')
+        .eq('menu_id', menuId)
+        .order('id');
+      const existingIds = (existingMeals ?? []).map((m) => m.id);
+
+      for (let i = 0; i < mealsToSave.length; i++) {
+        const meal = mealsToSave[i];
         const nutritionToSave = (summedNutrition(meal, recipeBook) || meal.nutrition) ?? null;
         const row = mealToRow({ ...meal, nutrition: nutritionToSave }, menuId);
-        const { error: mealErr } = await supabase.from('meals').insert(row);
-        if (mealErr) throw mealErr;
+        if (existingIds[i] != null) {
+          const { error: updateErr } = await supabase
+            .from('meals')
+            .update(row)
+            .eq('id', existingIds[i]);
+          if (updateErr) throw updateErr;
+        } else {
+          const { error: insertErr } = await supabase.from('meals').insert(row);
+          if (insertErr) throw insertErr;
+        }
+      }
+
+      // Remove any extra meal rows (e.g. we had 5 slots, now we have 3)
+      if (existingIds.length > mealsToSave.length) {
+        const idsToDelete = existingIds.slice(mealsToSave.length);
+        for (const id of idsToDelete) {
+          const { error: delErr } = await supabase.from('meals').delete().eq('id', id);
+          if (delErr) throw delErr;
+        }
       }
 
       if (skipCount > 0 && newCount === 0) {
@@ -719,6 +744,10 @@ export default function MenuEditor({
                 {(() => {
                   const displayNutr = summedNutrition(meal, recipeBook);
                   return (
+                <div>
+                  {displayNutr?.servingSize && (
+                    <p className="text-xs text-stone-500 mb-2">Serving size: {displayNutr.servingSize}</p>
+                  )}
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                   {[
                     { l: 'Cal', v: displayNutr?.calories },
@@ -732,6 +761,7 @@ export default function MenuEditor({
                       <p className="text-sm font-bold text-stone-800">{n.v !== undefined && n.v !== null ? String(n.v) : '—'}</p>
                     </div>
                   ))}
+                </div>
                 </div>
                   );
                 })()}

@@ -19,6 +19,33 @@ export const DEFAULT_STAPLES = [
 // --- HELPER FUNCTIONS ---
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+/** Invoke generate-text with retries so the nutrition path doesn't fail. Returns { data, error }. */
+export async function invokeGenerateTextWithRetry(body) {
+    const maxAttempts = 3;
+    const delayMs = 1500;
+    let lastError = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+            const { data, error } = await supabase.functions.invoke('generate-text', { body });
+            if (!error && data != null) {
+                return {
+                    data: {
+                        description: data.description ?? '',
+                        nutrition: data.nutrition ?? null,
+                        ingredients: Array.isArray(data.ingredients) ? data.ingredients : [],
+                    },
+                    error: null,
+                };
+            }
+            if (error) lastError = error;
+        } catch (e) {
+            lastError = e;
+        }
+        if (attempt < maxAttempts - 1) await delay(delayMs);
+    }
+    return { data: null, error: lastError };
+}
+
 // Route all AI text calls through the Supabase edge function to avoid CORS issues
 const chatAI = async (messages, model = 'openai') => {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -305,27 +332,35 @@ const FALLBACK_INGREDIENTS = {
     }
 };
 
-/** Generate a reasonable ingredient list locally when AI fails */
+/** Round to nearest quarter for clean display */
+const roundQty = (n) => Math.ceil(n * 4) / 4;
+
+/** Generate a reasonable ingredient list locally when AI fails.
+ *  Uses per-serving amounts based on real recipe standards. */
 const generateLocalIngredients = (mainDish, sides, servings) => {
     const lower = mainDish.toLowerCase();
     const ingredients = [];
-    const multiplier = Math.max(1, Math.ceil(servings / 4));
+    const s = Math.max(1, servings); // servings, never less than 1
+
+    // Is this a dish where protein is mixed in (stew, goulash, chili) vs. standalone (grilled chicken)?
+    const isMixedDish = /goulash|stew|chili|soup|casserole|lasagna|bolognese|jambalaya|gumbo|curry|pot pie/i.test(lower);
+    // Per-serving protein: standalone dishes ~0.33-0.5 lb, mixed dishes ~0.25 lb
+    const proteinPerServing = isMixedDish ? 0.25 : 0.33;
 
     // Step 1: Detect protein — check direct keywords first, then dish name map
     let foundProtein = false;
     for (const [key, options] of Object.entries(FALLBACK_INGREDIENTS.protein)) {
         if (lower.includes(key)) {
-            const lbs = (key === 'shrimp' ? 1 : 2) * multiplier;
+            const lbs = roundQty(s * (key === 'shrimp' ? 0.25 : proteinPerServing));
             ingredients.push(`${options[0]} (${lbs} lbs)`);
             foundProtein = true;
             break;
         }
     }
     if (!foundProtein) {
-        // Check the dish-to-protein map (e.g., "goulash" → Ground beef)
         for (const [dishKey, proteinName] of Object.entries(FALLBACK_INGREDIENTS.dishProteinMap)) {
             if (lower.includes(dishKey)) {
-                const lbs = 2 * multiplier;
+                const lbs = roundQty(s * proteinPerServing);
                 ingredients.push(`${proteinName} (${lbs} lbs)`);
                 foundProtein = true;
                 break;
@@ -333,45 +368,52 @@ const generateLocalIngredients = (mainDish, sides, servings) => {
         }
     }
     if (!foundProtein) {
-        // Last resort: add a generic protein — NEVER add the dish name as an ingredient
-        ingredients.push(`Chicken breast (${2 * multiplier} lbs)`);
+        ingredients.push(`Chicken breast (${roundQty(s * 0.33)} lbs)`);
     }
 
-    // Step 2: Detect cooking style and add appropriate ingredients
-    if (/bbq|barbecue/i.test(lower)) ingredients.push(`BBQ sauce (1 bottle)`);
-    if (/taco/i.test(lower)) { ingredients.push(`Taco seasoning (1 packet)`, `Taco shells (${4 * multiplier} count)`, `Shredded cheese (8 oz)`, `Sour cream (8 oz)`); }
-    if (/alfredo/i.test(lower)) ingredients.push(`Alfredo sauce (1 jar)`, `Fettuccine pasta (1 lb)`);
-    if (/marinara|tomato sauce/i.test(lower)) ingredients.push(`Marinara sauce (1 jar)`);
-    if (/curry/i.test(lower)) ingredients.push(`Curry paste (1 jar)`, `Coconut milk (1 can)`);
-    if (/teriyaki/i.test(lower)) ingredients.push(`Teriyaki sauce (1 bottle)`);
-    if (/stir.?fry/i.test(lower)) ingredients.push(`Soy sauce (2 tbsp)`, `Sesame oil (1 tbsp)`, `Mixed stir fry vegetables (${multiplier} lbs)`);
-    if (/goulash/i.test(lower)) ingredients.push(`Beef broth (${multiplier} cans)`, `Diced tomatoes (${multiplier} cans)`, `Tomato paste (1 can)`, `Elbow macaroni (${multiplier} lbs)`, `Paprika (2 tbsp)`);
-    if (/stew/i.test(lower)) ingredients.push(`Beef broth (${multiplier} cans)`, `Carrots (${multiplier} lbs)`, `Russet potatoes (${multiplier} lbs)`, `Celery (1 bunch)`);
-    if (/stuffed/i.test(lower)) ingredients.push(`Bell peppers (${multiplier * 4})`);
-    if (/chili/i.test(lower)) ingredients.push(`Kidney beans (${multiplier} cans)`, `Diced tomatoes (${multiplier} cans)`, `Chili powder (2 tbsp)`);
-    if (/parmesan/i.test(lower)) ingredients.push(`Parmesan cheese (8 oz)`, `Breadcrumbs (1 cup)`, `Marinara sauce (1 jar)`);
-    if (/korean|bbq chicken/i.test(lower)) ingredients.push(`Gochujang paste (1 jar)`, `Sesame oil (1 tbsp)`, `Rice vinegar (2 tbsp)`);
+    // Step 2: Detect cooking style and add appropriate ingredients (scaled per serving)
+    const cans = Math.ceil(s / 4); // 1 can per 4 servings
+    const bottles = Math.ceil(s / 8); // 1 bottle per 8 servings
+    const tbsp = Math.ceil(s / 2); // roughly 1 tbsp per 2 servings
+
+    if (/bbq|barbecue/i.test(lower)) ingredients.push(`BBQ sauce (${bottles} bottle${bottles > 1 ? 's' : ''})`);
+    if (/taco/i.test(lower)) { ingredients.push(`Taco seasoning (${Math.ceil(s / 6)} packet${Math.ceil(s/6) > 1 ? 's' : ''})`, `Taco shells (${s * 2} count)`, `Shredded cheese (${Math.ceil(s * 1)} oz)`, `Sour cream (${Math.ceil(s * 1)} oz)`); }
+    if (/alfredo/i.test(lower)) ingredients.push(`Alfredo sauce (${cans} jar${cans > 1 ? 's' : ''})`, `Fettuccine pasta (${roundQty(s * 0.125)} lbs)`);
+    if (/marinara|tomato sauce/i.test(lower)) ingredients.push(`Marinara sauce (${cans} jar${cans > 1 ? 's' : ''})`);
+    if (/curry/i.test(lower)) ingredients.push(`Curry paste (1 jar)`, `Coconut milk (${cans} can${cans > 1 ? 's' : ''})`);
+    if (/teriyaki/i.test(lower)) ingredients.push(`Teriyaki sauce (${bottles} bottle${bottles > 1 ? 's' : ''})`);
+    if (/stir.?fry/i.test(lower)) ingredients.push(`Soy sauce (${tbsp} tbsp)`, `Sesame oil (${Math.ceil(tbsp/2)} tbsp)`, `Mixed stir fry vegetables (${roundQty(s * 0.25)} lbs)`);
+    if (/goulash/i.test(lower)) ingredients.push(`Beef broth (${cans} can${cans > 1 ? 's' : ''})`, `Diced tomatoes (${cans} can${cans > 1 ? 's' : ''})`, `Tomato paste (1 can)`, `Elbow macaroni (${roundQty(s * 0.125)} lbs)`, `Paprika (${tbsp} tbsp)`);
+    if (/stew/i.test(lower)) ingredients.push(`Beef broth (${cans} can${cans > 1 ? 's' : ''})`, `Carrots (${roundQty(s * 0.125)} lbs)`, `Russet potatoes (${roundQty(s * 0.2)} lbs)`, `Celery (${Math.ceil(s / 6)} bunch)`);
+    if (/stuffed/i.test(lower)) ingredients.push(`Bell peppers (${s})`);
+    if (/chili/i.test(lower)) ingredients.push(`Kidney beans (${cans} can${cans > 1 ? 's' : ''})`, `Diced tomatoes (${cans} can${cans > 1 ? 's' : ''})`, `Chili powder (${tbsp} tbsp)`);
+    if (/parmesan/i.test(lower)) ingredients.push(`Parmesan cheese (${Math.ceil(s * 0.75)} oz)`, `Breadcrumbs (${Math.ceil(s * 0.125)} cups)`, `Marinara sauce (${cans} jar${cans > 1 ? 's' : ''})`);
+    if (/korean|bbq chicken/i.test(lower)) ingredients.push(`Gochujang paste (1 jar)`, `Sesame oil (${Math.ceil(tbsp/2)} tbsp)`, `Rice vinegar (${tbsp} tbsp)`);
 
     // Step 3: Add common aromatics if the list is still short
     if (ingredients.length < 5) {
-        ingredients.push(`Yellow onion (${multiplier})`, `Bell pepper (${multiplier * 2})`);
+        ingredients.push(`Yellow onion (${Math.ceil(s / 4)})`, `Bell pepper (${Math.ceil(s / 3)})`);
     }
 
-    // Step 4: Process sides
+    // Step 4: Process sides (per-serving scaling)
     for (const side of sides) {
         if (!side) continue;
         const sideLower = side.toLowerCase();
         let foundSide = false;
         for (const [key, options] of Object.entries(FALLBACK_INGREDIENTS.sides)) {
             if (sideLower.includes(key)) {
-                const qty = key === 'rice' ? `${2 * multiplier} cups` : key === 'beans' ? `${multiplier} cans` : `${multiplier} lbs`;
+                let qty;
+                if (key === 'rice') qty = `${roundQty(s * 0.5)} cups`; // 0.5 cup dry per person
+                else if (key === 'beans') qty = `${Math.ceil(s / 4)} cans`;
+                else if (key === 'pasta') qty = `${roundQty(s * 0.125)} lbs`;
+                else qty = `${roundQty(s * 0.2)} lbs`; // veggies: ~0.2 lb per person
                 ingredients.push(`${options[0]} (${qty})`);
                 foundSide = true;
                 break;
             }
         }
         if (!foundSide) {
-            ingredients.push(`${side} (${multiplier} lbs)`);
+            ingredients.push(`${side} (${roundQty(s * 0.2)} lbs)`);
         }
     }
 
@@ -390,20 +432,23 @@ const getIngredientsForMeal = async (mainDish, sides, servings) => {
             // On third attempt, use a simpler prompt
             const isSimple = attempt === 2;
             const prompt = isSimple
-                ? `I need to cook ${mainDish}${sides.length > 0 ? ' with ' + sides.join(' and ') : ''} for ${servings} people. List the specific grocery items I need to buy with exact quantities. Example format: ["Chicken breast (${Math.ceil(servings * 0.5)} lbs)", "Jasmine rice (${servings} cups)"]. Return JSON array of 6-10 strings. No markdown.`
+                ? `I need to cook ${mainDish}${sides.length > 0 ? ' with ' + sides.join(' and ') : ''} for ${servings} people. List the specific grocery items I need to buy with exact quantities. Protein is about 0.25-0.33 lb per person. Example: ["Ground beef (${roundQty(servings * 0.25)} lbs)", "Jasmine rice (${roundQty(servings * 0.5)} cups)"]. Return JSON array of 6-10 strings. No markdown.`
                 : `I am cooking this meal for EXACTLY ${servings} people. List every specific grocery item I need to BUY with quantities scaled for ${servings} servings.
 
 Main dish: ${mainDish}
 ${sidesText}
 
-QUANTITY SCALING GUIDE (scale proportionally for ${servings} servings):
-- Protein: ~0.5 lb per person → ${servings} people = ${Math.ceil(servings * 0.5)} lbs
-- Rice/pasta: ~0.75 cups dry per person → ${servings} people = ${Math.ceil(servings * 0.75)} cups
-- Vegetables: ~0.33 lb per person → ${servings} people = ${Math.ceil(servings * 0.33)} lbs
-- Canned goods: 1 can per 3-4 people
+QUANTITY SCALING GUIDE for ${servings} servings:
+- Protein (standalone like grilled chicken): ~0.33 lb per person → ${servings} people = ${roundQty(servings * 0.33)} lbs
+- Protein (mixed dishes like goulash/stew/chili): ~0.25 lb per person → ${servings} people = ${roundQty(servings * 0.25)} lbs  
+- Rice/grains: ~0.5 cups dry per person → ${servings} people = ${roundQty(servings * 0.5)} cups
+- Pasta: ~2 oz dry per person → ${servings} people = ${roundQty(servings * 0.125)} lbs
+- Vegetables: ~0.2 lb per person → ${servings} people = ${roundQty(servings * 0.2)} lbs
+- Canned goods (broth, tomatoes, beans): 1 can per 4 people → ${Math.ceil(servings / 4)} cans
+- Sauces (BBQ, teriyaki): 1 bottle per 8 people
 
 RULES:
-- List SPECIFIC buyable grocery items: "Boneless chicken breast (${Math.ceil(servings * 0.5)} lbs)" NOT "Chicken" or "ingredients for chicken"
+- List SPECIFIC buyable grocery items: "Boneless chicken breast (${roundQty(servings * 0.33)} lbs)" NOT "Chicken" or "ingredients for chicken"
 - Every item MUST have a quantity in parentheses: (X lbs), (X cups), (X cans), (X count)
 - Scale ALL quantities for exactly ${servings} servings
 - Skip pantry staples: ${staplesText}
@@ -581,6 +626,24 @@ RULES:
     return generateLocalFallback(ingredientsList);
 };
 
+// 4a. Get ingredients only (no pricing) — list shows instantly; prices can load in background
+export const getGroceryIngredientsOnly = async (mealConfig, onProgress) => {
+    onProgress("Breaking down recipes into ingredients...", 5);
+    const mealResults = await breakDownRecipesAI(mealConfig, (msg) => onProgress(msg, 10));
+    if (!mealResults || mealResults.length === 0) {
+        onProgress("No ingredients found", 100);
+        return [];
+    }
+    const allItems = [];
+    for (const mealGroup of mealResults) {
+        for (const ingredient of mealGroup.ingredients) {
+            allItems.push({ ingredient, meal: mealGroup.meal });
+        }
+    }
+    onProgress("Done", 100);
+    return allItems;
+};
+
 // 4. GROCERY ORCHESTRATOR — per-meal breakdown, Walmart search for ALL items, AI fallback
 export const generateGroceryListReal = async (mealConfig, onProgress) => {
     // Step 1: Get ingredients per meal
@@ -740,26 +803,92 @@ export const generateGroceryListReal = async (mealConfig, onProgress) => {
     return final;
 };
 
-// 5. NUTRITION
+/** Look up a single ingredient: Walmart search, then AI/estimate. Returns one grocery item. */
+export const lookupSingleIngredient = async (ingredientString) => {
+    const trimmed = (ingredientString || '').trim();
+    if (!trimmed) return null;
+
+    const neededQty = extractNeededQty(trimmed);
+    const searchName = trimmed.replace(/\(.*?\)/g, '').trim();
+    const fallbackUrl = `https://www.walmart.com/search?q=${encodeURIComponent(searchName)}`;
+
+    // Try Walmart first
+    const walmartResult = await searchWalmart(trimmed);
+    if (!walmartResult.fallback && walmartResult.products?.length > 0) {
+        const product = walmartResult.products[0];
+        const productPrice = typeof product.price === 'number' ? product.price : parseFloat(product.price);
+        if (!isNaN(productPrice) && productPrice > 0 && productPrice <= 75) {
+            const packagesNeeded = calcPackages(neededQty, product.size || '');
+            let totalPrice = packagesNeeded * productPrice;
+            if (totalPrice > 40) totalPrice = productPrice;
+            return {
+                id: Math.random().toString(36).substr(2, 9),
+                baseTerm: trimmed,
+                realName: product.name || trimmed,
+                brand: product.brand || '',
+                size: product.size || '',
+                category: 'Other',
+                price: totalPrice,
+                totalPrice,
+                packagesNeeded: totalPrice === productPrice ? 1 : packagesNeeded,
+                neededQty: neededQty || '',
+                walmartUrl: product.url || walmartResult.walmartUrl || fallbackUrl,
+                imageUrl: product.image || '',
+                isRealPrice: true,
+                meal: '',
+                purchased: false,
+            };
+        }
+    }
+
+    // Fallback: AI pricing then estimate
+    const aiResult = await matchWithAIFallback([trimmed]);
+    const ai = aiResult[0] || {};
+    const price = (typeof ai.totalPrice === 'number' && ai.totalPrice > 0) ? ai.totalPrice : (typeof ai.price === 'number' ? ai.price : estimatePrice(trimmed, ai.category || 'Other'));
+    const capped = price > 40 ? estimatePrice(trimmed, ai.category || 'Other') : price;
+    return {
+        id: Math.random().toString(36).substr(2, 9),
+        baseTerm: trimmed,
+        realName: ai.productName || trimmed,
+        brand: ai.brand || '',
+        size: ai.size || '',
+        category: ai.category || 'Other',
+        price: capped,
+        totalPrice: capped,
+        packagesNeeded: 1,
+        neededQty: neededQty || '',
+        walmartUrl: fallbackUrl,
+        imageUrl: '',
+        isRealPrice: false,
+        meal: '',
+        purchased: false,
+    };
+};
+
+// 5. NUTRITION — USDA-style estimates, fixed fallback (no randomness)
 export const generateNutritionAI = async (dishName) => {
-    const prompt = `Estimate realistic nutrition facts for a typical single serving of "${dishName}". Return ONLY this exact JSON format, no markdown, no code fences: {"calories": 500, "protein": "30g", "carbs": "40g", "fat": "20g", "sugar": "5g"}`;
+    const prompt = `Estimate accurate nutrition for ONE typical serving of "${dishName}". Use standard portion sizes and USDA-style values (e.g. 4 oz chicken ≈ 185 cal, 35g protein; 1/2 cup cooked rice ≈ 100 cal, 22g carbs). Include "servingSize" as a string (e.g. "4 oz", "1/2 cup", "1 cup (8 fl oz)", "1 quarter pound", "1 medium"). Return ONLY this JSON, no markdown: {"calories": number, "protein": "Xg", "carbs": "Xg", "fat": "Xg", "sugar": "Xg", "servingSize": "4 oz"}. Be consistent with real nutrition data.`;
     try {
         const text = await chatAI([
-            { role: 'system', content: 'Nutrition expert. Return ONLY raw JSON. No markdown. No code fences. No extra text.' },
+            { role: 'system', content: 'Nutrition expert. Use USDA-style typical values and standard portions. Include servingSize (oz, cup, quarter pound, etc.). Return ONLY raw JSON. No markdown.' },
             { role: 'user', content: prompt }
         ]);
         const result = extractJSON(text);
-        if (result && typeof result.calories !== 'undefined') return result;
+        if (result && typeof result.calories !== 'undefined' && result.calories > 0) {
+            if (!result.servingSize) result.servingSize = '1 serving';
+            return result;
+        }
     } catch (e) {
         console.error('Nutrition AI error:', e);
     }
-    // Fallback: generate reasonable estimates so the UI always shows something
-    console.warn('Using estimated nutrition for:', dishName);
+    // Fixed fallback (no randomness) — conservative typical meal values
+    console.warn('Using fallback nutrition for:', dishName);
     return {
-        calories: 400 + Math.floor(Math.random() * 250),
-        protein: `${20 + Math.floor(Math.random() * 20)}g`,
-        carbs: `${30 + Math.floor(Math.random() * 30)}g`,
-        fat: `${10 + Math.floor(Math.random() * 15)}g`,
-        sugar: `${3 + Math.floor(Math.random() * 8)}g`,
+        calories: 450,
+        protein: '30g',
+        carbs: '40g',
+        fat: '18g',
+        sugar: '5g',
+        servingSize: '1 serving',
     };
 };

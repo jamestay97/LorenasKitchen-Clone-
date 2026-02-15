@@ -145,9 +145,9 @@ function FeedbackCard({ fb, mealLookup, updatingId, onApprove, onDeny, onUnpubli
             </span>
           )}
         </div>
-        {fb.meal_id != null && (
+        {(fb.meal_id != null || fb.meal_title) && (
           <p className="text-[#2c5f4c] text-xs font-semibold mb-1">
-            Meal: {mealLookup[fb.meal_id] || `(ID: ${fb.meal_id})`}
+            Dish: {mealLookup[fb.meal_id] || fb.meal_title || (fb.meal_id != null ? `(ID: ${fb.meal_id})` : '')}
           </p>
         )}
         {fb.content && <p className="text-stone-700 text-sm mb-1">&ldquo;{fb.content}&rdquo;</p>}

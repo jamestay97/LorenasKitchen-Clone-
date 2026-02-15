@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { 
   ShoppingCart, Activity, Plus, X, ExternalLink, Pencil, Trash2,
-  Printer, ScanLine, Cpu, Loader2, Copy, Download, ListChecks, BadgeCheck, BadgeAlert
+  Printer, ScanLine, Cpu, Loader2, Copy, Download, ListChecks, BadgeCheck, BadgeAlert, RefreshCw
 } from 'lucide-react';
 import { 
   DEFAULT_STAPLES, 
-  generateGroceryListReal,
+  getGroceryIngredientsOnly,
   generateNutritionAI,
+  lookupSingleIngredient,
 } from '../../services/aiService';
 
 export default function ToolsTab({ menus }) {
@@ -26,6 +27,8 @@ export default function ToolsTab({ menus }) {
     const [nutritionItem, setNutritionItem] = useState('');
     const [nutritionData, setNutritionData] = useState(null);
     const [loadingNutrition, setLoadingNutrition] = useState(false);
+    const [addingStapleName, setAddingStapleName] = useState('');
+    const [refreshingPrices, setRefreshingPrices] = useState(false);
 
     useEffect(() => {
         const saved = localStorage.getItem('loranas_pantry_staples');
@@ -38,12 +41,12 @@ export default function ToolsTab({ menus }) {
     };
 
     const handleGenerateGrocery = async () => {
-        if(!selectedMenu) return;
+        if (!selectedMenu) return;
         setLoadingGrocery(true);
         setGroceryItems([]);
-        setProgress('Starting AI Agent...');
+        setProgress('Starting...');
         setProgressPercent(5);
-        
+
         try {
             const meals = selectedMenu.meals || [];
             if (meals.length === 0) {
@@ -54,20 +57,76 @@ export default function ToolsTab({ menus }) {
                 title: m.title, side: m.side || '', side2: m.side2 || '', quantity: mealQuantities[m.id] || 0
             })).filter(m => m.quantity > 0);
 
-            if(mealConfig.length === 0) {
+            if (mealConfig.length === 0) {
                 toast.error("Please add at least 1 serving");
                 return;
             }
 
-            const list = await generateGroceryListReal(mealConfig, (msg, pct) => {
+            const allItems = await getGroceryIngredientsOnly(mealConfig, (msg, pct) => {
                 setProgress(msg);
-                if(pct) setProgressPercent(pct);
+                if (pct != null) setProgressPercent(pct);
             });
-            
-            if (list) setGroceryItems(list);
+
+            if (!allItems || allItems.length === 0) {
+                toast.error("No ingredients found");
+                setLoadingGrocery(false);
+                return;
+            }
+
+            const searchName = (ing) => (ing || '').replace(/\(.*?\)/g, '').trim();
+            const placeholders = allItems.map(({ ingredient, meal }) => ({
+                id: Math.random().toString(36).substr(2, 9),
+                baseTerm: ingredient,
+                realName: ingredient,
+                category: 'Other',
+                price: 0,
+                totalPrice: 0,
+                priceLoading: true,
+                walmartUrl: `https://www.walmart.com/search?q=${encodeURIComponent(searchName(ingredient))}`,
+                purchased: false,
+                meal: meal || '',
+            }));
+
+            setGroceryItems(placeholders);
+            setLoadingGrocery(false);
+            setProgress(`List ready — loading prices for ${placeholders.length} items...`);
+            setProgressPercent(100);
+            toast.success(`Added ${placeholders.length} items. Prices loading...`);
+
+            const staggerMs = 350;
+            placeholders.forEach((item, index) => {
+                const doLookup = () =>
+                    lookupSingleIngredient(item.baseTerm)
+                    .then((priced) => {
+                        if (priced) {
+                            setGroceryItems((prev) =>
+                                prev.map((i) =>
+                                    i.id === item.id
+                                        ? {
+                                            ...priced,
+                                            id: item.id,
+                                            meal: item.meal,
+                                            priceLoading: false,
+                                        }
+                                        : i
+                                )
+                            );
+                        } else {
+                            setGroceryItems((prev) =>
+                                prev.map((i) => (i.id === item.id ? { ...i, priceLoading: false } : i))
+                            );
+                        }
+                    })
+                    .catch(() => {
+                        setGroceryItems((prev) =>
+                            prev.map((i) => (i.id === item.id ? { ...i, priceLoading: false } : i))
+                        );
+                    });
+                if (index === 0) doLookup();
+                else setTimeout(doLookup, index * staggerMs);
+            });
         } catch (e) {
             toast.error("Failed to generate list");
-        } finally {
             setLoadingGrocery(false);
         }
     };
@@ -84,6 +143,7 @@ export default function ToolsTab({ menus }) {
                     protein: result.protein ?? '—',
                     carbs: result.carbs ?? '—',
                     fat: result.fat ?? '—',
+                    servingSize: result.servingSize ?? null,
                 });
             } else {
                 toast.error('Could not parse nutrition. Try again.');
@@ -108,28 +168,85 @@ export default function ToolsTab({ menus }) {
         setGroceryItems((prev) => prev.filter((item) => item.id !== id));
     };
 
+    const handleRefreshPrices = async () => {
+        if (groceryItems.length === 0) return;
+        setRefreshingPrices(true);
+        const total = groceryItems.length;
+        let updated = [...groceryItems];
+        const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+        try {
+            for (let i = 0; i < total; i++) {
+                const item = updated[i];
+                const query = (item.baseTerm || item.realName || '').trim();
+                if (!query) continue;
+                const fresh = await lookupSingleIngredient(query);
+                if (fresh) {
+                    updated[i] = { ...item, realName: fresh.realName, brand: fresh.brand, size: fresh.size, price: fresh.totalPrice ?? fresh.price, totalPrice: fresh.totalPrice ?? fresh.price, walmartUrl: fresh.walmartUrl, imageUrl: fresh.imageUrl || item.imageUrl, isRealPrice: fresh.isRealPrice };
+                }
+                if (i < total - 1) await delay(400);
+            }
+            setGroceryItems(updated);
+            toast.success(`Live prices updated for ${total} item${total !== 1 ? 's' : ''}`);
+        } catch (e) {
+            console.warn(e);
+            toast.error('Could not refresh some prices. Try again.');
+        } finally {
+            setRefreshingPrices(false);
+        }
+    };
+
     const handleAddItem = () => {
         const name = newItemInput.trim();
         if (!name) return;
-        setGroceryItems((prev) => [
-            ...prev,
-            {
-                id: Math.random().toString(36).substr(2, 9),
-                baseTerm: name,
-                realName: name,
-                category: 'Other',
-                price: 0,
-                purchased: false,
-                image: null,
-            },
-        ]);
+        if (groceryItems.some((i) => (i.realName || i.baseTerm || '').toLowerCase() === name.toLowerCase())) {
+            toast.info('Already in list');
+            return;
+        }
+        const placeholderId = Math.random().toString(36).substr(2, 9);
+        const placeholder = {
+            id: placeholderId,
+            baseTerm: name,
+            realName: name,
+            category: 'Other',
+            price: 0,
+            totalPrice: 0,
+            priceLoading: true,
+            walmartUrl: `https://www.walmart.com/search?q=${encodeURIComponent(name)}`,
+            purchased: false,
+        };
+        setGroceryItems((prev) => [...prev, placeholder]);
         setNewItemInput('');
+        toast.success(`Added "${name}" — loading price...`);
+
+        lookupSingleIngredient(name)
+            .then((item) => {
+                if (item) {
+                    setGroceryItems((prev) =>
+                        prev.map((i) =>
+                            i.id === placeholderId
+                                ? { ...item, id: placeholderId, priceLoading: false }
+                                : i
+                        )
+                    );
+                    toast.success(`Price loaded: $${(item.totalPrice || item.price || 0).toFixed(2)}`);
+                } else {
+                    setGroceryItems((prev) =>
+                        prev.map((i) => (i.id === placeholderId ? { ...i, priceLoading: false } : i))
+                    );
+                }
+            })
+            .catch(() => {
+                setGroceryItems((prev) =>
+                    prev.map((i) => (i.id === placeholderId ? { ...i, priceLoading: false } : i))
+                );
+            });
     };
 
     const updateItemPrice = (id, price) => {
         const num = parseFloat(price);
+        const value = isNaN(num) ? 0 : num;
         setGroceryItems((prev) =>
-            prev.map((item) => (item.id === id ? { ...item, price: isNaN(num) ? 0 : num } : item))
+            prev.map((item) => (item.id === id ? { ...item, price: value, totalPrice: value } : item))
         );
     };
 
@@ -142,23 +259,47 @@ export default function ToolsTab({ menus }) {
     const addStapleToCart = (staple) => {
         const name = typeof staple === 'string' ? staple : (staple?.name || staple?.label || '');
         if (!name) return;
-        if (groceryItems.some((i) => (i.realName || '').toLowerCase() === name.toLowerCase())) {
+        if (groceryItems.some((i) => (i.realName || i.baseTerm || '').toLowerCase() === name.toLowerCase())) {
             toast.info('Already in list');
             return;
         }
-        setGroceryItems((prev) => [
-            ...prev,
-            {
-                id: Math.random().toString(36).substr(2, 9),
-                baseTerm: name,
-                realName: name,
-                category: 'Pantry',
-                price: 0,
-                purchased: false,
-                image: null,
-            },
-        ]);
-        toast.success(`Added "${name}"`);
+        const placeholderId = Math.random().toString(36).substr(2, 9);
+        const placeholder = {
+            id: placeholderId,
+            baseTerm: name,
+            realName: name,
+            category: 'Pantry',
+            price: 0,
+            totalPrice: 0,
+            priceLoading: true,
+            walmartUrl: `https://www.walmart.com/search?q=${encodeURIComponent(name)}`,
+            purchased: false,
+        };
+        setGroceryItems((prev) => [...prev, placeholder]);
+        toast.success(`Added "${name}" — loading price...`);
+
+        lookupSingleIngredient(name)
+            .then((item) => {
+                if (item) {
+                    setGroceryItems((prev) =>
+                        prev.map((i) =>
+                            i.id === placeholderId
+                                ? { ...item, id: placeholderId, category: 'Pantry', priceLoading: false }
+                                : i
+                        )
+                    );
+                    toast.success(`Price loaded: $${(item.totalPrice || item.price || 0).toFixed(2)}`);
+                } else {
+                    setGroceryItems((prev) =>
+                        prev.map((i) => (i.id === placeholderId ? { ...i, priceLoading: false } : i))
+                    );
+                }
+            })
+            .catch(() => {
+                setGroceryItems((prev) =>
+                    prev.map((i) => (i.id === placeholderId ? { ...i, priceLoading: false } : i))
+                );
+            });
     };
 
     const getAnyListText = () => {
@@ -245,6 +386,12 @@ export default function ToolsTab({ menus }) {
                 {nutritionData && (
                     <div className="border-2 border-black p-4 max-w-sm mx-auto bg-white font-sans animate-in zoom-in-95">
                         <h4 className="text-3xl font-black border-b-8 border-black pb-1">Nutrition Facts</h4>
+                        {nutritionData.servingSize && (
+                            <div className="py-1.5 border-b border-stone-300 flex justify-between items-center text-sm">
+                                <span className="font-bold">Serving size</span>
+                                <span>{nutritionData.servingSize}</span>
+                            </div>
+                        )}
                         <div className="py-2 border-b-4 border-black flex justify-between items-end"><div><p className="font-bold text-sm">Amount Per Serving</p><p className="text-3xl font-black">Calories</p></div><p className="text-4xl font-black">{nutritionData.calories}</p></div>
                         <div className="text-sm py-1 border-b border-stone-300 flex justify-between"><span className="font-bold">Total Fat</span><span>{nutritionData.fat}</span></div>
                         <div className="text-sm py-1 border-b border-stone-300 flex justify-between"><span className="font-bold">Total Carbohydrate</span><span>{nutritionData.carbs}</span></div>
@@ -367,16 +514,21 @@ export default function ToolsTab({ menus }) {
                         </div>
                     ) : (
                         <div className="flex flex-wrap gap-1.5">
-                            {pantryStaples.slice(0, 14).map((s, idx) => (
-                                <button
-                                    key={idx}
-                                    type="button"
-                                    onClick={() => addStapleToCart(s)}
-                                    className="px-3 py-1.5 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-sm font-medium"
-                                >
-                                    {s.icon} {s.name}
-                                </button>
-                            ))}
+                            {pantryStaples.slice(0, 14).map((s, idx) => {
+                                const name = s?.name || s?.label || '';
+                                const isAdding = addingStapleName === name;
+                                return (
+                                    <button
+                                        key={idx}
+                                        type="button"
+                                        onClick={() => addStapleToCart(s)}
+                                        disabled={!!addingStapleName}
+                                        className="px-3 py-1.5 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1.5"
+                                    >
+                                        {isAdding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : s.icon} {name}
+                                    </button>
+                                );
+                            })}
                         </div>
                     )}
                 </div>
@@ -386,16 +538,17 @@ export default function ToolsTab({ menus }) {
                         {/* Add item to list */}
                         <div className="bg-stone-50 border border-stone-200 rounded-xl p-4 mb-4">
                             <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">Add Item to List</p>
+                            <p className="text-xs text-stone-400 mb-2">Type an ingredient (e.g. Ground beef (2 lbs) or Chicken breast). We&apos;ll search Walmart and add a price &amp; link.</p>
                             <div className="flex gap-2">
                                 <input
                                     type="text"
                                     value={newItemInput}
                                     onChange={(e) => setNewItemInput(e.target.value)}
                                     onKeyDown={(e) => e.key === 'Enter' && handleAddItem()}
-                                    placeholder="Type an item to add (e.g. Chicken breast)..."
+                                    placeholder="e.g. Ground beef (2 lbs), Olive oil (1 bottle)"
                                     className="flex-1 p-3 border border-stone-200 rounded-xl text-sm bg-white"
                                 />
-                                <button type="button" onClick={handleAddItem} className="bg-[#2c5f4c] text-white px-5 py-3 rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-[#1a3c30]">
+                                <button type="button" onClick={handleAddItem} disabled={!newItemInput.trim()} className="bg-[#2c5f4c] text-white px-5 py-3 rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-[#1a3c30] disabled:opacity-50 disabled:cursor-not-allowed">
                                     <Plus className="w-4 h-4" /> Add
                                 </button>
                             </div>
@@ -403,6 +556,9 @@ export default function ToolsTab({ menus }) {
 
                         {/* Actions toolbar */}
                         <div className="flex flex-wrap items-center gap-2 mb-4">
+                            <button type="button" onClick={handleRefreshPrices} disabled={refreshingPrices} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[#2c5f4c] text-white font-semibold text-sm hover:bg-[#1a3c30] disabled:opacity-60 disabled:cursor-not-allowed" title="Fetch current prices from Walmart">
+                                {refreshingPrices ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} Get live prices
+                            </button>
                             <button type="button" onClick={copyForAnyList} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-stone-100 text-stone-700 font-semibold text-sm hover:bg-stone-200">
                                 <Copy className="w-4 h-4" /> Copy
                             </button>
@@ -417,7 +573,7 @@ export default function ToolsTab({ menus }) {
                             </button>
                         </div>
 
-                        <p className="text-xs text-stone-400 mb-3">Click any item name to edit it. Click the price to adjust. Use the X to delete.</p>
+                        <p className="text-xs text-stone-400 mb-3">Prices are not saved—use &quot;Get live prices&quot; before shopping. Click any item name to edit it, price to adjust, X to delete.</p>
 
                         <p className="text-sm font-bold text-stone-500 mb-4 flex items-center gap-2"><ListChecks className="w-4 h-4" /> To find ({toFindItems.length} items across {mealGroups.length} meal{mealGroups.length !== 1 ? 's' : ''})</p>
 
@@ -460,17 +616,23 @@ export default function ToolsTab({ menus }) {
                                                     )}
                                                 </div>
                                                 <div className="flex items-center gap-1.5 shrink-0">
-                                                    <span className="flex items-center gap-0.5 font-bold text-sm text-stone-700">
-                                                        $<input
-                                                            type="number"
-                                                            min={0}
-                                                            step={0.01}
-                                                            value={typeof item.totalPrice === 'number' && item.totalPrice > 0 ? item.totalPrice : (typeof item.price === 'number' && item.price > 0 ? item.price : '')}
-                                                            onChange={(e) => updateItemPrice(item.id, e.target.value)}
-                                                            className="w-14 rounded border border-stone-200 px-1.5 py-1 text-right text-sm"
-                                                            placeholder="0"
-                                                        />
-                                                    </span>
+                                                    {item.priceLoading ? (
+                                                        <span className="flex items-center gap-1 font-bold text-sm text-stone-500">
+                                                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> ...
+                                                        </span>
+                                                    ) : (
+                                                        <span className="flex items-center gap-0.5 font-bold text-sm text-stone-700">
+                                                            $<input
+                                                                type="number"
+                                                                min={0}
+                                                                step={0.01}
+                                                                value={typeof item.totalPrice === 'number' && item.totalPrice > 0 ? item.totalPrice : (typeof item.price === 'number' && item.price > 0 ? item.price : '')}
+                                                                onChange={(e) => updateItemPrice(item.id, e.target.value)}
+                                                                className="w-14 rounded border border-stone-200 px-1.5 py-1 text-right text-sm"
+                                                                placeholder="0"
+                                                            />
+                                                        </span>
+                                                    )}
                                                     <a
                                                         href={item.walmartUrl || `https://www.walmart.com/search?q=${encodeURIComponent((item.baseTerm || '').replace(/\(.*?\)/g, '').trim())}`}
                                                         target="_blank"

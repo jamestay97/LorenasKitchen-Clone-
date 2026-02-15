@@ -85,6 +85,9 @@ export default function MealCard({ meal, index = 0, approvedFeedback = [], onSub
 
           {/* Nutrition — always at the bottom of the main card */}
           <div className="pt-4 border-t border-stone-100">
+            {meal.nutrition?.servingSize && (
+              <p className="text-[10px] font-semibold text-stone-500 uppercase tracking-wider mb-2">Serving size: {meal.nutrition.servingSize}</p>
+            )}
             <div className="grid grid-cols-4 gap-2 text-center">
               <div className="bg-amber-50 rounded-xl py-2">
                 <span className="text-[10px] text-amber-600 font-bold uppercase block">Cal</span>

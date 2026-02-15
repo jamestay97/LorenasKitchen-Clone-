@@ -17,6 +17,19 @@ import {
 import MealCard from './MealCard';
 import InfoBar from './InfoBar';
 
+function normalizeDish(name) {
+  return (name || '').trim().toLowerCase();
+}
+
+/** Match feedback to a meal by meal_id (same row) or by main dish name (same dish on any menu). */
+function feedbackMatchesMeal(fb, meal) {
+  if (fb.meal_id != null && meal.id != null && String(fb.meal_id) === String(meal.id)) return true;
+  const fbTitle = normalizeDish(fb.meal_title);
+  const mealTitle = normalizeDish(meal.title);
+  if (fbTitle.length > 0 && mealTitle.length > 0 && fbTitle === mealTitle) return true;
+  return false;
+}
+
 export default function Home({ session }) {
   const [meals, setMeals] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -104,7 +117,9 @@ export default function Home({ session }) {
       }
 
       if (menu) {
-        setMeals(menu.meals || []);
+        const list = (menu.meals || []).filter((m) => m.title?.trim());
+        list.sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+        setMeals(list);
         if (menu.week_start) {
           // Always show Mon-Sun range
           const start = new Date(menu.week_start + 'T00:00:00');
@@ -165,6 +180,7 @@ export default function Home({ session }) {
       const { error } = await supabase.from('feedback').insert([
         {
           meal_id: mealId,
+          meal_title: mealTitle?.trim() || null,
           rating,
           content: content?.trim() || null,
           user_email: userEmailVal?.trim() || null,
@@ -359,7 +375,7 @@ export default function Home({ session }) {
                 key={meal.id || index}
                 meal={meal}
                 index={index}
-                approvedFeedback={approvedFeedback.filter((f) => f.meal_id === meal.id)}
+                approvedFeedback={approvedFeedback.filter((f) => feedbackMatchesMeal(f, meal))}
                 onSubmitFeedback={handleSubmitMealFeedback}
               />
             ))}
@@ -546,9 +562,10 @@ export default function Home({ session }) {
             <p className="text-stone-500 text-center mb-10">Real feedback from our customers</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {approvedFeedback.slice(0, 6).map((fb) => {
-                const fbMeal = meals.find((m) => m.id === fb.meal_id);
-                const dishImg = fbMeal?.main_img || fbMeal?.image_main || null;
-                const dishName = fb.meal_title || fbMeal?.title || null;
+                const fbMeal = meals.find((m) => m.id != null && fb.meal_id != null && String(m.id) === String(fb.meal_id));
+                const mealByTitle = meals.find((m) => feedbackMatchesMeal(fb, m));
+                const dishImg = fbMeal?.main_img || fbMeal?.image_main || mealByTitle?.main_img || mealByTitle?.image_main || null;
+                const dishName = fb.meal_title || fbMeal?.title || mealByTitle?.title || null;
                 return (
                   <div key={fb.id} className="bg-white rounded-2xl border border-stone-100 shadow-sm p-6">
                     {/* Dish thumbnail + name */}
